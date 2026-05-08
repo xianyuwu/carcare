@@ -16,17 +16,11 @@ load_dotenv(ENV_FILE)
 
 # 敏感密钥映射：内部 key → 环境变量名
 ENV_SECRETS = {
-    "ocr_aliyun_access_key_id": "OCR_ALIYUN_ACCESS_KEY_ID",
-    "ocr_aliyun_access_key_secret": "OCR_ALIYUN_ACCESS_KEY_SECRET",
-    "ocr_tencent_secret_id": "OCR_TENCENT_SECRET_ID",
-    "ocr_tencent_secret_key": "OCR_TENCENT_SECRET_KEY",
-    "ocr_baidu_app_id": "OCR_BAIDU_APP_ID",
-    "ocr_baidu_api_key": "OCR_BAIDU_API_KEY",
-    "ocr_baidu_secret_key": "OCR_BAIDU_SECRET_KEY",
     "llm_api_key": "LLM_API_KEY",
     "llm_embedding_api_key": "LLM_EMBEDDING_API_KEY",
     "rag_rerank_api_key": "RAG_RERANK_API_KEY",
     "search_api_key": "SEARCH_API_KEY",
+    "ocr_llm_api_key": "OCR_LLM_API_KEY",
 }
 
 # 明文展示的字段（不脱敏）
@@ -34,12 +28,12 @@ PLAIN_DISPLAY_KEYS = {"ocr_tencent_secret_id"}
 
 # 非敏感配置 - 存数据库
 DEFAULT_SETTINGS = {
-    "ocr_provider": "aliyun",
-    "ocr_aliyun_endpoint": "",
     "llm_api_url": "https://api.openai.com/v1",
     "llm_model": "gpt-4o",
     "llm_embedding_api_url": "https://api.openai.com/v1",
     "llm_embedding_model": "text-embedding-3-small",
+    "ocr_llm_api_url": "",
+    "ocr_llm_model": "qwen-vl-plus",
     "rag_rerank_enabled": "false",
     "rag_rerank_api_url": "",
     "rag_rerank_model": "",

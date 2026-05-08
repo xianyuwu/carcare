@@ -11,9 +11,10 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from app.database import get_db, async_session
-from app.models import Manual
+from app.models import Manual, Vehicle, VehicleShare, User
 from app.schemas import ManualOut, ManualUpdate, ChunkPreviewResult, ChunkPreview
 from app.config import UPLOAD_DIR, MANUAL_PAGES_DIR
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/manuals", tags=["manuals"])
 logger = logging.getLogger(__name__)
@@ -27,11 +28,59 @@ class WebKnowledgeRequest(BaseModel):
     separators: str = "\\n\\n,\\n"
 
 
+async def get_user_vehicle_ids(db: AsyncSession, user_id: int) -> list[int]:
+    """获取用户有权访问的车辆 ID 列表"""
+    result = await db.execute(select(Vehicle.id).where(Vehicle.owner_id == user_id))
+    owned = set(row[0] for row in result.all())
+
+    result = await db.execute(
+        select(VehicleShare.vehicle_id).where(VehicleShare.user_id == user_id)
+    )
+    shared = set(row[0] for row in result.all())
+
+    return list(owned | shared)
+
+
+async def check_vehicle_write_access(db: AsyncSession, vehicle_id: int, user_id: int) -> Vehicle:
+    """检查用户是否有权在车辆下写入（上传手册等）"""
+    vehicle = await db.get(Vehicle, vehicle_id)
+    if not vehicle:
+        raise HTTPException(404, "车辆不存在")
+
+    if vehicle.owner_id == user_id:
+        return vehicle
+
+    result = await db.execute(
+        select(VehicleShare).where(
+            VehicleShare.vehicle_id == vehicle_id,
+            VehicleShare.user_id == user_id,
+            VehicleShare.permission == "write"
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(403, "需要写入权限")
+
+    return vehicle
+
+
 @router.get("", response_model=list[ManualOut])
-async def list_manuals(vehicle_id: int | None = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Manual)
+async def list_manuals(
+    vehicle_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """获取当前用户可访问的手册"""
+    accessible_vehicles = await get_user_vehicle_ids(db, current_user.id)
+
     if vehicle_id:
-        stmt = stmt.where(Manual.vehicle_id == vehicle_id)
+        if vehicle_id not in accessible_vehicles:
+            raise HTTPException(403, "无权访问该车辆的手册")
+        stmt = select(Manual).where(Manual.vehicle_id == vehicle_id)
+    else:
+        if not accessible_vehicles:
+            return []
+        stmt = select(Manual).where(Manual.vehicle_id.in_(accessible_vehicles))
+
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -44,13 +93,18 @@ async def upload_manual(
     chunk_overlap: int = Query(100),
     separators: str = Query("\\n\\n,\\n"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    """上传手册（需要写入权限）"""
+    await check_vehicle_write_access(db, vehicle_id, current_user.id)
+
     dest = UPLOAD_DIR / f"manual_{vehicle_id}_{file.filename}"
     content = await file.read()
     dest.write_bytes(content)
 
     manual = Manual(
         vehicle_id=vehicle_id,
+        user_id=current_user.id,
         filename=file.filename,
         file_path=str(dest),
         status="pending",
@@ -66,8 +120,14 @@ async def upload_manual(
 
 
 @router.post("/web", response_model=ManualOut)
-async def add_web_knowledge(req: WebKnowledgeRequest, db: AsyncSession = Depends(get_db)):
-    """从 Web 地址抓取内容，保存文件后返回，不立即索引"""
+async def add_web_knowledge(
+    req: WebKnowledgeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """从 Web 地址抓取内容（需要写入权限）"""
+    await check_vehicle_write_access(db, req.vehicle_id, current_user.id)
+
     from app.services.rag.web_scraper import fetch_web_text
 
     text, title = await fetch_web_text(req.url)
@@ -82,6 +142,7 @@ async def add_web_knowledge(req: WebKnowledgeRequest, db: AsyncSession = Depends
 
     manual = Manual(
         vehicle_id=req.vehicle_id,
+        user_id=current_user.id,
         filename=filename,
         file_path=str(dest),
         status="pending",
@@ -151,11 +212,21 @@ async def preview_chunks(
 
 
 @router.post("/{manual_id}/index")
-async def index_with_progress(manual_id: int, db: AsyncSession = Depends(get_db)):
+async def index_with_progress(
+    manual_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """启动后台索引并通过 SSE 流式推送进度"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    # 检查访问权限
+    accessible_vehicles = await get_user_vehicle_ids(db, current_user.id)
+    if manual.vehicle_id not in accessible_vehicles:
+        raise HTTPException(403, "无权访问该手册")
+
     if manual.status == "indexing":
         raise HTTPException(409, "手册正在索引中，请稍后")
 
@@ -190,11 +261,20 @@ async def index_with_progress(manual_id: int, db: AsyncSession = Depends(get_db)
 
 
 @router.put("/{manual_id}", response_model=ManualOut)
-async def update_manual(manual_id: int, body: ManualUpdate, db: AsyncSession = Depends(get_db)):
-    """更新手册配置（分块参数），可选自动重新索引"""
+async def update_manual(
+    manual_id: int,
+    body: ManualUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """更新手册配置（需要写入权限）"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    # 检查写入权限
+    await check_vehicle_write_access(db, manual.vehicle_id, current_user.id)
+
     if manual.status == "indexing":
         raise HTTPException(409, "手册正在索引中，请稍后")
 
@@ -250,11 +330,18 @@ async def reindex_all():
 
 
 @router.post("/{manual_id}/reindex", response_model=ManualOut)
-async def reindex_manual(manual_id: int, db: AsyncSession = Depends(get_db)):
-    """重新索引手册"""
+async def reindex_manual(
+    manual_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """重新索引手册（需要写入权限）"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    await check_vehicle_write_access(db, manual.vehicle_id, current_user.id)
+
     if manual.status == "indexing":
         raise HTTPException(409, "手册正在索引中，请稍后")
 
@@ -265,10 +352,18 @@ async def reindex_manual(manual_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{manual_id}")
-async def delete_manual(manual_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_manual(
+    manual_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """删除手册（需要写入权限）"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    await check_vehicle_write_access(db, manual.vehicle_id, current_user.id)
+
     # 删除对应的 ChromaDB 向量数据
     try:
         import chromadb
@@ -283,11 +378,20 @@ async def delete_manual(manual_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{manual_id}/file")
-async def get_manual_file(manual_id: int, db: AsyncSession = Depends(get_db)):
-    """返回手册原始文件（PDF），供浏览器直接预览"""
+async def get_manual_file(
+    manual_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """返回手册原始文件（PDF）"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    # 检查访问权限
+    accessible_vehicles = await get_user_vehicle_ids(db, current_user.id)
+    if manual.vehicle_id not in accessible_vehicles:
+        raise HTTPException(403, "无权访问该手册")
 
     # 网页来源没有原始文件，跳转到原始 URL
     if manual.source_type == "web" and manual.source_url:
@@ -312,11 +416,17 @@ async def get_manual_page(
     page_num: int,
     highlight: str | None = Query(None, description="需要高亮的文本"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """渲染 PDF 指定页为 PNG 图片，可选高亮文本区域，带磁盘缓存"""
+    """渲染 PDF 指定页为 PNG 图片"""
     manual = await db.get(Manual, manual_id)
     if not manual:
         raise HTTPException(404, "手册不存在")
+
+    # 检查访问权限
+    accessible_vehicles = await get_user_vehicle_ids(db, current_user.id)
+    if manual.vehicle_id not in accessible_vehicles:
+        raise HTTPException(403, "无权访问该手册")
 
     pdf_path = UPLOAD_DIR / f"manual_{manual.vehicle_id}_{manual.filename}"
     if not pdf_path.exists():

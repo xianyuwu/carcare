@@ -27,5 +27,11 @@ dist/
 # Claude Code
 .claude/
 
+# TypeScript
+*.tsbuildinfo
+
+# 外部目录
+maintenance-ocr-demo/
+
 # 系统文件
 .DS_Store

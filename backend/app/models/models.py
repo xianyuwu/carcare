@@ -1,14 +1,47 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
 from app.database import Base
 
 
+class User(Base):
+    """用户表"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    nickname = Column(String(100), default="")
+    role = Column(String(20), default="member")  # admin | member
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # 关联
+    vehicles = relationship("Vehicle", back_populates="owner")
+    vehicle_shares_received = relationship("VehicleShare", back_populates="user", cascade="all, delete-orphan")
+
+
+class VehicleShare(Base):
+    """车辆分享表 - 允许非车主用户访问车辆"""
+    __tablename__ = "vehicle_shares"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    permission = Column(String(20), default="read")  # read | write
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    vehicle = relationship("Vehicle", back_populates="shares")
+    user = relationship("User", back_populates="vehicle_shares_received")
+
+
 class Vehicle(Base):
     __tablename__ = "vehicles"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     brand = Column(String(100), nullable=False)
     model = Column(String(100), nullable=False)
     year = Column(Integer)
@@ -19,8 +52,10 @@ class Vehicle(Base):
     photo_path = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    owner = relationship("User", back_populates="vehicles")
     records = relationship("MaintenanceRecord", back_populates="vehicle", cascade="all, delete-orphan")
     manuals = relationship("Manual", back_populates="vehicle", cascade="all, delete-orphan")
+    shares = relationship("VehicleShare", back_populates="vehicle", cascade="all, delete-orphan")
 
 
 class MaintenanceRecord(Base):
@@ -28,6 +63,7 @@ class MaintenanceRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 记录创建者
     date = Column(String(20), nullable=False)
     mileage = Column(Integer)
     next_mileage = Column(Integer)
@@ -90,6 +126,7 @@ class Manual(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 上传者
     filename = Column(String(500), nullable=False)
     file_path = Column(String(500), nullable=False)
     upload_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -125,6 +162,7 @@ class ChatFeedback(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 反馈提交者
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     feedback = Column(String(10), nullable=False)  # like / dislike

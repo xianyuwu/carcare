@@ -115,6 +115,18 @@ class SettingsUpdate(BaseModel):
 
 
 # --- OCR ---
+class OCRItem(BaseModel):
+    """OCR 识别的单个保养项目"""
+    name: str = ""
+    part_number: Optional[str] = ""
+    operation: Optional[str] = ""
+    quantity: float = 1
+    unit_price: float = 0
+    parts_fee: float = 0
+    labor_fee: float = 0
+    other_fee: float = 0
+
+
 class OCRBlock(BaseModel):
     """OCR 识别的文本块（含坐标）"""
     text: str
@@ -124,11 +136,18 @@ class OCRBlock(BaseModel):
 class OCRResult(BaseModel):
     raw_text: str
     fields: dict[str, str]
-    items: list[str]
+    items: list[OCRItem] = []          # 完整保养项目对象（而非仅 name 列表）
     blocks: list[OCRBlock] = []          # 全文识别块（含坐标）
     field_coords: dict[str, list[dict[str, float]]] = {}  # 字段名 → 四角坐标
-    image_base64: str = ""               # 原始图片 base64（用于前端标注）
+    image_base64: str = ""               # 送 OCR 的那张图片 base64（用于前端标注）
     error: str = ""
+    # LLM OCR 新增字段
+    confidence: dict[str, float] = {}   # 字段级置信度 {date: 0.95, mileage: 0.90, ...}
+    bbox: dict[str, list[float]] = {}   # 归一化 bbox {date: [x1,y1,x2,y2], ...}
+    items_bbox: list[list[float]] = []  # 项目行归一化 bbox [[x1,y1,x2,y2], ...]
+    raw_json: str = ""                  # LLM 返回的原始 JSON 字符串
+    natural_width: int = 0              # image_base64 对应图片的真实像素宽度
+    natural_height: int = 0             # image_base64 对应图片的真实像素高度
 
 
 # --- Manual ---
@@ -230,3 +249,30 @@ class ItemTemplateOut(BaseModel):
 
 class ItemTemplateMatchRequest(BaseModel):
     texts: list[str]
+
+
+# --- User ---
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    nickname: str
+    role: str
+
+    model_config = {"from_attributes": True}
+
+
+# --- VehicleShare ---
+class VehicleShareCreate(BaseModel):
+    email: str  # 被分享用户的邮箱
+    permission: str = "read"  # read | write
+
+
+class VehicleShareOut(BaseModel):
+    id: int
+    vehicle_id: int
+    user_id: int
+    permission: str
+    created_at: str
+    user: UserResponse
+
+    model_config = {"from_attributes": True}

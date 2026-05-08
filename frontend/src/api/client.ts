@@ -1,10 +1,74 @@
 const BASE = '/api'
 
+// Token 管理
+const TOKEN_KEY = 'carcare_token'
+const REFRESH_TOKEN_KEY = 'carcare_refresh_token'
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+export function setToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function setRefreshToken(token: string) {
+  localStorage.setItem(REFRESH_TOKEN_KEY, token)
+}
+
+export function clearTokens() {
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
+}
+
+// 带认证的请求
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options?.headers as Record<string, string> || {}),
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const resp = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers,
   })
+
+  if (resp.status === 401) {
+    // Token 过期，尝试刷新
+    const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
+    if (refreshToken) {
+      try {
+        const refreshResp = await fetch(`${BASE}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        })
+        if (refreshResp.ok) {
+          const data = await refreshResp.json()
+          setToken(data.access_token)
+          headers['Authorization'] = `Bearer ${data.access_token}`
+          // 重试原请求
+          const retryResp = await fetch(`${BASE}${path}`, { ...options, headers })
+          if (!retryResp.ok) {
+            const err = await retryResp.json().catch(() => ({ detail: retryResp.statusText }))
+            throw new Error(err.detail || retryResp.statusText)
+          }
+          return retryResp.json()
+        }
+      } catch {
+        // 刷新失败，清除 token
+      }
+    }
+    clearTokens()
+    // 触发页面刷新，跳转到登录页
+    window.location.href = '/#/login'
+    throw new Error('登录已过期，请重新登录')
+  }
+
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
     throw new Error(err.detail || resp.statusText)
@@ -12,9 +76,125 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return resp.json()
 }
 
+// 无需 Content-Type 的 FormData 请求（OAuth2 登录用）
+async function requestForm<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  // 如果 body 是 URLSearchParams，设置正确的 Content-Type
+  if (options?.body instanceof URLSearchParams) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+  }
+
+  const resp = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers,
+  })
+
+  if (resp.status === 401) {
+    clearTokens()
+    window.location.href = '/#/login'
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    throw new Error(err.detail || resp.statusText)
+  }
+  return resp.json()
+}
+
+// --- Auth ---
+export interface User {
+  id: number
+  email: string
+  nickname: string
+  role: string  // admin | member | pending
+}
+
+export interface LoginResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+  user: User
+}
+
+export const login = (email: string, password: string) =>
+  requestForm<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: new URLSearchParams({ username: email, password }),
+  })
+
+export const logout = () => {
+  clearTokens()
+}
+
+export const getCurrentUser = () => request<User>('/auth/me')
+
+export const refreshToken = async (refreshToken: string): Promise<{ access_token: string }> => {
+  const resp = await fetch(`${BASE}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+  if (!resp.ok) throw new Error('刷新 token 失败')
+  return resp.json()
+}
+
+// --- Admin Users ---
+export interface AdminUser {
+  id: number
+  email: string
+  nickname: string
+  role: string
+  is_active: boolean
+  created_at: string
+}
+
+export interface UserListResponse {
+  total: number
+  users: AdminUser[]
+}
+
+export const getAdminUsers = () => request<UserListResponse>('/admin/users')
+export const createAdminUser = (data: { email: string; password: string; nickname?: string; role?: string }) =>
+  request<AdminUser>('/admin/users', { method: 'POST', body: JSON.stringify(data) })
+export const updateAdminUser = (id: number, data: { nickname?: string; role?: string; is_active?: boolean }) =>
+  request<AdminUser>(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+export const deleteAdminUser = (id: number) =>
+  request<{ ok: boolean }>(`/admin/users/${id}`, { method: 'DELETE' })
+
+// --- Vehicle Shares ---
+export interface VehicleShare {
+  id: number
+  vehicle_id: number
+  user_id: number
+  permission: string
+  created_at: string
+  user: User
+}
+
+export const shareVehicle = (vehicleId: number, email: string, permission: string = 'read') =>
+  request<VehicleShare>(`/vehicles/${vehicleId}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ email, permission }),
+  })
+
+export const getVehicleShares = (vehicleId: number) =>
+  request<VehicleShare[]>(`/vehicles/${vehicleId}/shares`)
+
+export const deleteVehicleShare = (vehicleId: number, shareId: number) =>
+  request<{ ok: boolean }>(`/vehicles/${vehicleId}/share/${shareId}`, { method: 'DELETE' })
+
+export const getSharedVehicles = () => request<Vehicle[]>('/vehicles/shared')
+
 // --- Vehicles ---
 export interface Vehicle {
   id: number
+  owner_id?: number
   brand: string
   model: string
   year?: number
@@ -27,6 +207,7 @@ export interface Vehicle {
 }
 
 export const getVehicles = () => request<Vehicle[]>('/vehicles')
+export const getOwnedVehicles = () => request<Vehicle[]>('/vehicles/owned')
 export const getVehicle = (id: number) => request<Vehicle>(`/vehicles/${id}`)
 export const createVehicle = (data: Partial<Vehicle>) =>
   request<Vehicle>('/vehicles', { method: 'POST', body: JSON.stringify(data) })
@@ -37,7 +218,10 @@ export const deleteVehicle = (id: number) =>
 export const uploadVehiclePhoto = async (id: number, file: File) => {
   const form = new FormData()
   form.append('file', file)
-  const resp = await fetch(`${BASE}/vehicles/${id}/photo`, { method: 'POST', body: form })
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(`${BASE}/vehicles/${id}/photo`, { method: 'POST', body: form, headers })
   if (!resp.ok) throw new Error('上传失败')
   return resp.json() as Promise<Vehicle>
 }
@@ -72,9 +256,29 @@ export interface MaintenanceRecord {
   items: RecordItem[]
 }
 
-export const getRecords = (vehicleId?: number) =>
-  request<MaintenanceRecord[]>(`/records${vehicleId ? `?vehicle_id=${vehicleId}` : ''}`)
+export interface PaginatedRecords {
+  items: MaintenanceRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+export const getRecords = (params?: {
+  vehicleId?: number
+  sortOrder?: 'asc' | 'desc'
+  page?: number
+  pageSize?: number
+}) => {
+  const qs = new URLSearchParams()
+  if (params?.vehicleId) qs.set('vehicle_id', String(params.vehicleId))
+  if (params?.sortOrder === 'asc') qs.set('sort_order', 'asc')
+  if (params?.page) qs.set('page', String(params.page))
+  if (params?.pageSize) qs.set('page_size', String(params.pageSize))
+  const query = qs.toString()
+  return request<PaginatedRecords>(`/records${query ? `?${query}` : ''}`)
+}
 export const getRecord = (id: number) => request<MaintenanceRecord>(`/records/${id}`)
+export const checkDuplicateRecord = (vehicleId: number, date: string) =>
+  request<{ exists: boolean; count: number; hint: string }>(`/records/check-duplicate?vehicle_id=${vehicleId}&date=${date}`)
 export const createRecord = (data: any) =>
   request<MaintenanceRecord>('/records', { method: 'POST', body: JSON.stringify(data) })
 export const updateRecord = (id: number, data: any) =>
@@ -83,6 +287,17 @@ export const deleteRecord = (id: number) =>
   request<{ ok: boolean }>(`/records/${id}`, { method: 'DELETE' })
 
 // --- Upload & OCR ---
+export interface OCRItem {
+  name: string
+  part_number: string
+  operation: string
+  quantity: number
+  unit_price: number
+  parts_fee: number
+  labor_fee: number
+  other_fee: number
+}
+
 export interface OCRBlock {
   text: string
   polygon: { X: number; Y: number }[]
@@ -91,17 +306,27 @@ export interface OCRBlock {
 export interface OCRResult {
   raw_text: string
   fields: Record<string, string>
-  items: string[]
+  items: OCRItem[]
   blocks: OCRBlock[]
   field_coords: Record<string, { X: number; Y: number }[]>
   image_base64: string
   error: string
+  // LLM OCR 新增字段
+  confidence?: Record<string, number>
+  bbox?: Record<string, number[]>
+  items_bbox?: number[][]
+  raw_json?: string
+  natural_width?: number
+  natural_height?: number
 }
 
 export const uploadAndOCR = async (file: File): Promise<OCRResult> => {
   const form = new FormData()
   form.append('file', file)
-  const resp = await fetch(`${BASE}/upload`, { method: 'POST', body: form })
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(`${BASE}/upload`, { method: 'POST', body: form, headers })
   if (!resp.ok) throw new Error('OCR 识别失败')
   return resp.json()
 }
@@ -165,9 +390,13 @@ export const uploadManual = async (vehicleId: number, file: File, config?: { chu
   if (config?.separators) params.set('separators', config.separators)
   const form = new FormData()
   form.append('file', file)
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const resp = await fetch(`${BASE}/manuals/upload?${params}`, {
     method: 'POST',
     body: form,
+    headers,
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
@@ -203,12 +432,17 @@ export const previewChunks = async (file: File | null, url: string | null, confi
   })
   if (url) params.set('url', url)
 
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
   if (file) {
     const form = new FormData()
     form.append('file', file)
     const resp = await fetch(`${BASE}/manuals/preview-chunks?${params}`, {
       method: 'POST',
       body: form,
+      headers,
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }))
@@ -216,7 +450,7 @@ export const previewChunks = async (file: File | null, url: string | null, confi
     }
     return resp.json()
   } else {
-    const resp = await fetch(`${BASE}/manuals/preview-chunks?${params}`, { method: 'POST' })
+    const resp = await fetch(`${BASE}/manuals/preview-chunks?${params}`, { method: 'POST', headers })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }))
       throw new Error(err.detail || '预览失败')
@@ -250,9 +484,14 @@ export async function* indexManualProgress(
   manualId: number,
   signal?: AbortSignal,
 ): AsyncGenerator<IndexProgressEvent> {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
   const resp = await fetch(`${BASE}/manuals/${manualId}/index`, {
     method: 'POST',
     signal,
+    headers,
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
@@ -359,9 +598,13 @@ export type ChatStreamEvent =
   | { type: 'search_sources'; data: SearchSource[] }
 
 export async function* chatStream(vehicleId: number, question: string, history: { role: string; content: string }[] = [], signal?: AbortSignal, search?: boolean): AsyncGenerator<ChatStreamEvent> {
+  const token = getToken()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
   const resp = await fetch(`${BASE}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ vehicle_id: vehicleId, question, history, search }),
     signal,
   })

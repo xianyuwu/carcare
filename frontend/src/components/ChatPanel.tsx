@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
-import { X, Send, Sparkles, User, ZoomIn, ZoomOut, Maximize2, Minimize2, Wrench, TrendingUp, Droplets, FileText, ChevronRight, Paintbrush, ThumbsUp, ThumbsDown, Copy, Check, AlertCircle, RefreshCw, Square, BookOpen, ExternalLink, ChevronDown, ChevronUp, Globe, Search, Link } from 'lucide-react'
+import { X, Send, Sparkles, User, ZoomIn, ZoomOut, Wrench, TrendingUp, Droplets, FileText, ChevronRight, Paintbrush, ThumbsUp, ThumbsDown, Copy, Check, AlertCircle, RefreshCw, Square, BookOpen, ExternalLink, ChevronDown, ChevronUp, Globe, Search, Link, Minimize2, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useStore, type ChatMessage } from '../hooks/useStore'
@@ -12,9 +12,6 @@ const welcomeCards = [
   { icon: FileText, text: '生成本月养车报告', question: '根据我的保养记录，生成一份养车报告总结，包括花费统计和保养建议。' },
 ]
 
-const MIN_WIDTH = 400
-const MAX_WIDTH = 600
-const STORAGE_KEY = 'chatPanelWidth'
 const MESSAGE_WARNING_THRESHOLD = 50
 
 // --- 引用标注组件（纯展示，modal 由 ChatPanel 渲染） ---
@@ -225,17 +222,27 @@ function CitationMarkdown({ content, sources, searchSources, onOpenCitation }: {
   )
 }
 
-// --- 参考资料栏：去重显示引用了哪些文档/网页 ---
-function ReferenceBar({ sources, searchSources }: {
+// --- 参考资料栏：去重显示引用了哪些文档/网页（仅展示被实际引用的来源） ---
+function ReferenceBar({ sources, searchSources, content }: {
   sources: Source[]
   searchSources?: SearchSource[]
+  content: string
 }) {
   const [expanded, setExpanded] = useState(false)
 
-  // 按 manual_id 去重，同一个文档/网页算一篇
+  // 从回复内容中提取被引用的编号，只展示实际用到的来源
+  const citedIds = useMemo(() => {
+    const ids = new Set<number>()
+    const matches = content.matchAll(/\[(\d+)\]/g)
+    for (const m of matches) ids.add(parseInt(m[1]))
+    return ids
+  }, [content])
+
+  // 按 manual_id 去重，同一个文档/网页算一篇，过滤未引用的
   const uniqueRefs = useMemo(() => {
     const map = new Map<number, { source: Source; pages: number[] }>()
     for (const s of sources) {
+      if (!citedIds.has(s.id)) continue
       const existing = map.get(s.manual_id)
       if (existing) {
         if (s.page != null && !existing.pages.includes(s.page)) {
@@ -246,10 +253,16 @@ function ReferenceBar({ sources, searchSources }: {
       }
     }
     return Array.from(map.values())
-  }, [sources])
+  }, [sources, citedIds])
 
-  const hasSearch = searchSources && searchSources.length > 0
-  const totalCount = uniqueRefs.length + (hasSearch ? searchSources!.length : 0)
+  // 过滤出被引用的搜索来源
+  const citedSearchSources = useMemo(() => {
+    if (!searchSources?.length) return []
+    return searchSources.filter(s => citedIds.has(s.id))
+  }, [searchSources, citedIds])
+
+  const hasSearch = citedSearchSources.length > 0
+  const totalCount = uniqueRefs.length + citedSearchSources.length
 
   if (totalCount === 0) return null
 
@@ -301,7 +314,7 @@ function ReferenceBar({ sources, searchSources }: {
             )
           })}
           {/* 搜索来源：Search + Globe 图标，新 tab 打开原文 */}
-          {hasSearch && searchSources!.map((s, i) => {
+          {hasSearch && citedSearchSources.map((s, i) => {
             const truncated = s.title.length > 15 ? s.title.slice(0, 15) + '...' : s.title
             return (
               <a
@@ -377,7 +390,7 @@ const ChatBubble = memo(function ChatBubble({
                 [&_a]:text-purple-600 [&_a]:underline
               ">
                 <CitationMarkdown content={msg.content} sources={msg.sources} searchSources={msg.searchSources} onOpenCitation={onOpenCitation} />
-                <ReferenceBar sources={msg.sources || []} searchSources={msg.searchSources} />
+                <ReferenceBar sources={msg.sources || []} searchSources={msg.searchSources} content={msg.content} />
               </div>
             ) : (
               <div className="flex items-center gap-1.5 py-1">
@@ -436,7 +449,7 @@ const ChatBubble = memo(function ChatBubble({
 })
 
 export default function ChatPanel() {
-  const { currentVehicleId, pendingQuestion, setPendingQuestion, chatOpen, setChatOpen, chatMessages, setChatMessages, clearChatMessages } = useStore()
+  const { currentVehicleId, pendingQuestion, setPendingQuestion, chatOpen, setChatOpen, chatMaximized, setChatMaximized, chatMessages, setChatMessages, clearChatMessages } = useStore()
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [copiedId, setCopiedId] = useState<number | null>(null)
@@ -483,14 +496,6 @@ export default function ChatPanel() {
     setStreaming(false)
   }
 
-  const getDefaultWidth = () => parseInt(localStorage.getItem(STORAGE_KEY) || '400', 10)
-  const [width, setWidth] = useState(getDefaultWidth)
-  const [maximized, setMaximized] = useState(false)
-  const [prevWidth, setPrevWidth] = useState(getDefaultWidth)
-  const dragging = useRef(false)
-  const dragStartX = useRef(0)
-  const dragStartWidth = useRef(0)
-
   useEffect(() => {
     if (pendingQuestion && !pendingHandled.current && !streaming) {
       pendingHandled.current = true
@@ -508,41 +513,6 @@ export default function ChatPanel() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
-
-  // 拖拽调整宽度
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    if (maximized) return
-    dragging.current = true
-    dragStartX.current = e.clientX
-    dragStartWidth.current = width
-
-    const onMove = (ev: MouseEvent) => {
-      if (!dragging.current) return
-      const delta = dragStartX.current - ev.clientX
-      const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, dragStartWidth.current + delta))
-      setWidth(newWidth)
-    }
-    const onUp = (ev: MouseEvent) => {
-      dragging.current = false
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      const finalWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, dragStartWidth.current + (dragStartX.current - ev.clientX)))
-      localStorage.setItem(STORAGE_KEY, String(finalWidth))
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [width, maximized])
-
-  function toggleMaximize() {
-    if (maximized) {
-      setWidth(prevWidth)
-      setMaximized(false)
-    } else {
-      setPrevWidth(width)
-      setMaximized(true)
-    }
-  }
 
   function handleFeedback(index: number, type: 'like' | 'dislike') {
     setChatMessages((prev) => {
@@ -681,19 +651,8 @@ export default function ChatPanel() {
 
   return (
     <div
-      className="h-full shrink-0 flex bg-white border-l border-slate-200 animate-slide-in"
-      style={{ width: maximized ? MAX_WIDTH : width }}
+      className={`${chatMaximized ? 'w-1/3' : 'w-96'} shrink-0 flex flex-col bg-white border-l border-slate-200 animate-slide-in transition-all duration-200`}
     >
-      {/* 左边缘拖拽条 */}
-      <div
-        onMouseDown={onDragStart}
-        className={`w-1.5 shrink-0 transition-colors ${
-          maximized ? 'cursor-default' : 'cursor-col-resize hover:bg-purple-300 active:bg-purple-400'
-        }`}
-        title={maximized ? undefined : '拖拽调整宽度'}
-      />
-
-      <div className="flex-1 flex flex-col min-w-0">
         {/* 顶栏 */}
         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-5 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
@@ -707,11 +666,11 @@ export default function ChatPanel() {
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={toggleMaximize}
+              onClick={() => setChatMaximized(!chatMaximized)}
               className="w-8 h-8 rounded-lg hover:bg-white/20 flex items-center justify-center transition-colors"
-              title={maximized ? '还原' : '最大化'}
+              title={chatMaximized ? '还原宽度' : '最大化'}
             >
-              {maximized
+              {chatMaximized
                 ? <Minimize2 className="w-4 h-4 text-white" />
                 : <Maximize2 className="w-4 h-4 text-white" />
               }
@@ -727,7 +686,7 @@ export default function ChatPanel() {
         </div>
 
         {/* 对话区 */}
-        <div className="flex-1 overflow-auto px-4 py-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
           {chatMessages.length === 0 ? (
             <div className="flex flex-col h-full">
               <div className="flex-1 flex flex-col items-center justify-center px-4">
@@ -814,7 +773,7 @@ export default function ChatPanel() {
                 <div className="w-px h-4 bg-slate-300" />
                 <button
                   onClick={() => setSearchEnabled(!searchEnabled)}
-                  className={`relative p-1.5 rounded-md transition-colors ${
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
                     searchEnabled
                       ? 'text-white bg-blue-500'
                       : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'
@@ -822,9 +781,7 @@ export default function ChatPanel() {
                   title={searchEnabled ? '联网搜索已开启' : '开启联网搜索'}
                 >
                   <Globe className="w-3.5 h-3.5" />
-                  {searchEnabled && (
-                    <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-white" />
-                  )}
+                  <span className="text-xs font-medium">联网搜索</span>
                 </button>
               </div>
               <div className="flex items-center gap-1.5">
@@ -856,7 +813,6 @@ export default function ChatPanel() {
             <span className="text-[10px] text-slate-400">内容由AI生成，请仔细甄别</span>
           </div>
         </div>
-      </div>
 
       {/* 引用来源 Modal */}
       {modalSource && (

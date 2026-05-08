@@ -14,3 +14,5 @@ Pillow>=10.0.0
 alibabacloud-ocr-api20210707>=3.0.0
 tencentcloud-sdk-python>=3.0.0
 baidu-aip>=4.16.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4

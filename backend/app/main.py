@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from app.database import init_db
-from app.routers import vehicles, records, upload, chat, manuals, settings, templates, dashboard
+from app.routers import vehicles, records, upload, chat, manuals, settings, templates, dashboard, auth, admin_users
 
 PHOTO_DIR = Path(__file__).resolve().parent.parent / "data" / "vehicle_photos"
 
@@ -34,6 +34,8 @@ app.include_router(manuals.router)
 app.include_router(settings.router)
 app.include_router(templates.router)
 app.include_router(dashboard.router)
+app.include_router(auth.router)
+app.include_router(admin_users.router)
 
 # Serve vehicle photos
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)

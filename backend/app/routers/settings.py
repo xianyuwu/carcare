@@ -4,9 +4,10 @@ from sqlalchemy import select, func
 import time
 
 from app.database import get_db
-from app.models import Setting, Manual
+from app.models import Setting, Manual, User
 from app.schemas import SettingsUpdate
 from app.config import DEFAULT_SETTINGS, get_secret, get_all_secrets, update_secrets, ENV_SECRETS, is_masked
+from app.routers.auth import get_current_user, get_current_admin
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -22,7 +23,10 @@ async def _get_setting_value(db: AsyncSession, key: str) -> str:
 
 
 @router.get("")
-async def get_settings(db: AsyncSession = Depends(get_db)):
+async def get_settings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     # 非敏感配置从数据库读
     result = await db.execute(select(Setting))
     rows = result.scalars().all()
@@ -34,7 +38,11 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("")
-async def update_settings(data: SettingsUpdate, db: AsyncSession = Depends(get_db)):
+async def update_settings(
+    data: SettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     # 保存前读取旧的 embedding 模型值
     old_emb_model = ""
     result = await db.execute(select(Setting).where(Setting.key == "llm_embedding_model"))
@@ -76,7 +84,10 @@ async def update_settings(data: SettingsUpdate, db: AsyncSession = Depends(get_d
 
 
 @router.post("/test-llm")
-async def test_llm(db: AsyncSession = Depends(get_db)):
+async def test_llm(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     import httpx
 
     api_url = await _get_setting_value(db, "llm_api_url")
@@ -108,7 +119,10 @@ async def test_llm(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/test-embedding")
-async def test_embedding(db: AsyncSession = Depends(get_db)):
+async def test_embedding(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     import httpx
 
     api_url = await _get_setting_value(db, "llm_embedding_api_url")
@@ -138,9 +152,10 @@ async def test_embedding(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/test-ocr")
-async def test_ocr(db: AsyncSession = Depends(get_db)):
-    provider = await _get_setting_value(db, "ocr_provider")
-
+async def test_ocr(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     start = time.time()
     try:
         from io import BytesIO
@@ -164,14 +179,17 @@ async def test_ocr(db: AsyncSession = Depends(get_db)):
         elapsed = round(time.time() - start, 2)
 
         recognized = result.raw_text.strip() if result.raw_text else ""
-        return {"ok": True, "provider": provider, "recognized": recognized[:200], "elapsed": elapsed}
+        return {"ok": True, "provider": "llm", "recognized": recognized[:200], "elapsed": elapsed}
     except Exception as e:
         elapsed = round(time.time() - start, 2)
         return {"ok": False, "error": str(e), "elapsed": elapsed}
 
 
 @router.post("/test-rag")
-async def test_rag(db: AsyncSession = Depends(get_db)):
+async def test_rag(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     """验证 RAG 检索参数配置：Top K、Score 阈值、Rerank 连通性"""
     start = time.time()
     errors = []
@@ -242,7 +260,10 @@ async def test_rag(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/test-search")
-async def test_search(db: AsyncSession = Depends(get_db)):
+async def test_search(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+):
     """测试联网搜索 API 连通性"""
     import httpx
 
@@ -280,7 +301,10 @@ _tavily_cache: dict = {"data": None, "expires": 0}
 
 
 @router.get("/search-usage")
-async def get_search_usage(db: AsyncSession = Depends(get_db)):
+async def get_search_usage(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """查询搜索用量：本地当月统计 + Tavily API 实时额度"""
     from app.models.models import SearchUsage
     from datetime import datetime

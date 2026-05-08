@@ -1,8 +1,27 @@
+import { useRef, useState, useEffect } from 'react'
 import { FileText, DollarSign, Calendar, TrendingUp, Sparkles, RefreshCw, Wrench, MessageSquare } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from 'recharts'
 import { getVehicles, getRecords, getPrediction, generatePrediction, type Vehicle, type MaintenanceRecord } from '../api/client'
 import { useStore } from '../hooks/useStore'
+
+/** 测量容器宽度的 hook，替代 ResponsiveContainer 解决 recharts 在 flex/grid 中的测量问题 */
+function useChartWidth() {
+  const ref = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return { ref, width }
+}
 
 const COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#64748b']
 
@@ -24,7 +43,8 @@ function computeItemData(recs: MaintenanceRecord[]) {
     if (r.items?.length) {
       for (const item of r.items) {
         if (!item.name) continue
-        map[item.name] = (map[item.name] || 0) + item.subtotal
+        const cost = (item.parts_cost || 0) + (item.labor_cost || 0) + (item.other_cost || 0) || item.subtotal || 0
+        map[item.name] = (map[item.name] || 0) + cost
       }
     } else {
       const label = r.type || '保养'
@@ -37,14 +57,84 @@ function computeItemData(recs: MaintenanceRecord[]) {
     .slice(0, 8)
 }
 
+function SpendingTrendChart({ recs }: { recs: MaintenanceRecord[] }) {
+  const { ref, width } = useChartWidth()
+  const data = computeMonthlyData(recs)
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center">
+          <TrendingUp className="w-4 h-4 text-blue-600" />
+        </div>
+        <span className="text-sm font-medium text-slate-700">保养花费趋势</span>
+      </div>
+      <div ref={ref} className="w-full" style={{ height: 220 }}>
+        <BarChart width={width || 600} height={220} data={data}>
+          <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickLine={false} axisLine={false} tickFormatter={(v: number) => `¥${v}`} />
+          <Tooltip
+            formatter={(value: any) => [`¥${Number(value).toLocaleString()}`, '花费']}
+            labelFormatter={(label: any) => `${label}`}
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+          />
+          <Bar dataKey="amount" fill="#6366f1" isAnimationActive={false} />
+        </BarChart>
+      </div>
+    </div>
+  )
+}
+
+function SpendingPieChart({ recs }: { recs: MaintenanceRecord[] }) {
+  const { ref, width } = useChartWidth()
+  const itemData = computeItemData(recs)
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
+          <DollarSign className="w-4 h-4 text-purple-600" />
+        </div>
+        <span className="text-sm font-medium text-slate-700">保养项目花费分布</span>
+      </div>
+      {itemData.length === 0 ? (
+        <p className="text-sm text-slate-400 py-8 text-center">暂无保养项目数据</p>
+      ) : (
+        <div className="flex items-center gap-4">
+          <div ref={ref} className="w-1/2" style={{ height: 220 }}>
+            <PieChart width={width || 220} height={220}>
+              <Pie data={itemData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} paddingAngle={2} isAnimationActive={false}>
+                {itemData.map((_, i) => (
+                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip
+                formatter={(value: any, name: any) => [`¥${Number(value).toLocaleString()}`, name || '']}
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+              />
+            </PieChart>
+          </div>
+          <div className="flex-1 space-y-2">
+            {itemData.map((d, i) => (
+              <div key={d.name} className="flex items-center gap-2">
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                <span className="text-xs text-slate-600 flex-1 truncate">{d.name}</span>
+                <span className="text-xs font-medium text-slate-700">¥{d.value.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const queryClient = useQueryClient()
   const { setChatOpen, setPendingQuestion } = useStore()
   const { data: vehicles } = useQuery({ queryKey: ['vehicles'], queryFn: getVehicles })
-  const { data: records } = useQuery({ queryKey: ['records'], queryFn: () => getRecords() })
+  const { data: paginated } = useQuery({ queryKey: ['records'], queryFn: () => getRecords({ pageSize: 100 }) })
 
   const vehicle: Vehicle | undefined = vehicles?.[0]
-  const recs: MaintenanceRecord[] = records || []
+  const recs: MaintenanceRecord[] = paginated?.items || []
   const totalCount = recs.length
   const totalAmount = recs.reduce((s, r) => s + r.paid_amount, 0)
 
@@ -283,66 +373,10 @@ export default function Dashboard() {
       {recs.length > 0 && (
         <div className="grid grid-cols-2 gap-4 mb-6">
           {/* 花费趋势 */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center">
-                <TrendingUp className="w-4 h-4 text-blue-600" />
-              </div>
-              <span className="text-sm font-medium text-slate-700">保养花费趋势</span>
-            </div>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={computeMonthlyData(recs)}>
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickLine={false} axisLine={false} tickFormatter={(v: number) => `¥${v}`} />
-                <Tooltip
-                  formatter={(value: any) => [`¥${Number(value).toLocaleString()}`, '花费']}
-                  labelFormatter={(label: any) => `${label}`}
-                  contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-                />
-                <Bar dataKey="amount" fill="#6366f1" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <SpendingTrendChart recs={recs} />
 
           {/* 项目分布 */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
-                <DollarSign className="w-4 h-4 text-purple-600" />
-              </div>
-              <span className="text-sm font-medium text-slate-700">保养项目花费分布</span>
-            </div>
-            {(() => {
-              const itemData = computeItemData(recs)
-              const total = itemData.reduce((s, d) => s + d.value, 0)
-              return (
-                <div className="flex items-center gap-4">
-                  <ResponsiveContainer width="50%" height={220}>
-                    <PieChart>
-                      <Pie data={itemData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={2}>
-                        {itemData.map((_, i) => (
-                          <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(value: any) => [`¥${Number(value).toLocaleString()}`, '花费']}
-                        contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="flex-1 space-y-2">
-                    {itemData.map((d, i) => (
-                      <div key={d.name} className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                        <span className="text-xs text-slate-600 flex-1 truncate">{d.name}</span>
-                        <span className="text-xs font-medium text-slate-700">¥{d.value.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })()}
-          </div>
+          <SpendingPieChart recs={recs} />
         </div>
       )}
     </div>

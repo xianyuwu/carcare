@@ -3,8 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
-from app.models import ItemTemplate, MaintenanceItem
+from app.models import ItemTemplate, MaintenanceItem, User
 from app.schemas import ItemTemplateCreate, ItemTemplateUpdate, ItemTemplateOut, ItemTemplateMatchRequest
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/item-templates", tags=["item-templates"])
 
@@ -14,6 +15,7 @@ async def list_templates(
     category: str | None = None,
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     stmt = select(ItemTemplate).order_by(ItemTemplate.category, ItemTemplate.name)
     if category:
@@ -25,7 +27,11 @@ async def list_templates(
 
 
 @router.get("/{template_id}", response_model=ItemTemplateOut)
-async def get_template(template_id: int, db: AsyncSession = Depends(get_db)):
+async def get_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     template = await db.get(ItemTemplate, template_id)
     if not template:
         raise HTTPException(404, "模板不存在")
@@ -33,7 +39,11 @@ async def get_template(template_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=ItemTemplateOut)
-async def create_template(data: ItemTemplateCreate, db: AsyncSession = Depends(get_db)):
+async def create_template(
+    data: ItemTemplateCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     existing = await db.execute(select(ItemTemplate).where(ItemTemplate.name == data.name))
     if existing.scalar_one_or_none():
         raise HTTPException(400, f"项目「{data.name}」已存在")
@@ -49,6 +59,7 @@ async def update_template(
     template_id: int,
     data: ItemTemplateUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     template = await db.get(ItemTemplate, template_id)
     if not template:
@@ -65,7 +76,11 @@ async def update_template(
 
 
 @router.delete("/{template_id}")
-async def delete_template(template_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     template = await db.get(ItemTemplate, template_id)
     if not template:
         raise HTTPException(404, "模板不存在")
@@ -75,7 +90,10 @@ async def delete_template(template_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/import-from-records")
-async def import_from_records(db: AsyncSession = Depends(get_db)):
+async def import_from_records(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     from sqlalchemy import func
 
     # 每个名称取最新一条记录的完整字段
@@ -167,6 +185,7 @@ async def import_from_records(db: AsyncSession = Depends(get_db)):
 async def match_templates(
     data: ItemTemplateMatchRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     result = await db.execute(select(ItemTemplate))
     all_templates = result.scalars().all()

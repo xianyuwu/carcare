@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { Source, SearchSource } from '../api/client'
+import type { Source, SearchSource, User } from '../api/client'
+import { getToken, setToken, setRefreshToken, clearTokens, getCurrentUser } from '../api/client'
 
 const initialMenu = location.hash.slice(1) || 'dashboard'
 
@@ -20,12 +21,23 @@ interface AppState {
   setPendingQuestion: (q: string | null) => void
   chatOpen: boolean
   setChatOpen: (open: boolean) => void
+  chatMaximized: boolean
+  setChatMaximized: (maximized: boolean) => void
   sidebarCollapsed: boolean
   setSidebarCollapsed: (collapsed: boolean) => void
   sidebarBeforeChat: boolean
   chatMessages: ChatMessage[]
   setChatMessages: (fn: (prev: ChatMessage[]) => ChatMessage[]) => void
   clearChatMessages: () => void
+
+  // Auth state
+  user: User | null
+  isAuthenticated: boolean
+  isLoading: boolean
+  setUser: (user: User | null) => void
+  setAuth: (user: User, accessToken: string, refreshToken: string) => void
+  logout: () => void
+  checkAuth: () => Promise<void>
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -42,17 +54,45 @@ export const useStore = create<AppState>((set, get) => ({
   setChatOpen: (open) => {
     const state = get()
     if (open) {
-      // 打开聊天：记住当前侧边栏状态，然后收起
       set({ chatOpen: true, sidebarBeforeChat: state.sidebarCollapsed, sidebarCollapsed: true })
     } else {
-      // 关闭聊天：恢复之前的侧边栏状态
       set({ chatOpen: false, sidebarCollapsed: state.sidebarBeforeChat })
     }
   },
   sidebarCollapsed: false,
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  chatMaximized: false,
+  setChatMaximized: (maximized) => set({ chatMaximized: maximized }),
   sidebarBeforeChat: false,
   chatMessages: [],
   setChatMessages: (fn) => set({ chatMessages: fn(get().chatMessages) }),
   clearChatMessages: () => set({ chatMessages: [] }),
+
+  // Auth
+  user: null,
+  isAuthenticated: !!getToken(),
+  isLoading: true,
+  setUser: (user) => set({ user, isAuthenticated: !!user }),
+  setAuth: (user, accessToken, refreshToken) => {
+    setToken(accessToken)
+    setRefreshToken(refreshToken)
+    set({ user, isAuthenticated: true, isLoading: false })
+  },
+  logout: () => {
+    clearTokens()
+    set({ user: null, isAuthenticated: false, isLoading: false })
+  },
+  checkAuth: async () => {
+    if (!getToken()) {
+      set({ isLoading: false, isAuthenticated: false, user: null })
+      return
+    }
+    try {
+      const user = await getCurrentUser()
+      set({ user, isAuthenticated: true, isLoading: false })
+    } catch {
+      clearTokens()
+      set({ user: null, isAuthenticated: false, isLoading: false })
+    }
+  },
 }))

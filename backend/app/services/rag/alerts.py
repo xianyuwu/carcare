@@ -82,7 +82,7 @@ def _clean_json_response(text: str) -> str:
 
 async def _call_llm(config: dict, system_prompt: str, user_prompt: str) -> str:
     import httpx
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
         resp = await client.post(
             f"{config['api_url']}/chat/completions",
             headers={
@@ -163,8 +163,8 @@ async def predict_items(vehicle_id: int) -> dict:
             "reasoning_points": data.get("reasoning_points", []),
         }
     except Exception as e:
-        logger.warning(f"预测保养项目失败: {e}")
-        return {"predicted_items": [], "reasoning": f"预测失败: {e}"}
+        logger.warning(f"预测保养项目失败: {type(e).__name__}: {e}")
+        return {"predicted_items": [], "reasoning": f"预测失败: {type(e).__name__}: {e}"}
 
 
 async def predict_cost(vehicle_id: int, predicted_items: list[str]) -> dict:
@@ -213,8 +213,8 @@ async def predict_cost(vehicle_id: int, predicted_items: list[str]) -> dict:
             "cost_breakdown": data.get("cost_breakdown", []),
         }
     except Exception as e:
-        logger.warning(f"预测保养费用失败: {e}")
-        return {"estimated_cost": 0, "cost_reasoning": f"预测失败: {e}"}
+        logger.warning(f"预测保养费用失败: {type(e).__name__}: {e}")
+        return {"estimated_cost": 0, "cost_reasoning": f"预测失败: {type(e).__name__}: {e}"}
 
 
 async def get_cached_prediction(vehicle_id: int) -> dict | None:

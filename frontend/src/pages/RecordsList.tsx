@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, Plus, X, Trash2, Pencil, FileText } from 'lucide-react'
-import { getRecords, createRecord, updateRecord, deleteRecord, getItemTemplates, type MaintenanceRecord, type ItemTemplate } from '../api/client'
+import { Upload, Plus, X, Trash2, Pencil, FileText, ArrowUpDown, ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from 'lucide-react'
+import { getRecords, createRecord, updateRecord, deleteRecord, getItemTemplates, type MaintenanceRecord, type ItemTemplate, type PaginatedRecords } from '../api/client'
 import { useStore } from '../hooks/useStore'
 
 /** 保养记录弹窗（新增 / 编辑复用） */
@@ -395,14 +396,19 @@ function ItemsDetailModal({
 }
 
 export default function RecordsList() {
-  const { currentVehicleId, setActiveMenu } = useStore()
+  const navigate = useNavigate()
+  const { currentVehicleId } = useStore()
   const [modalRecord, setModalRecord] = useState<MaintenanceRecord | null | 'add'>(null)
   const [detailRecord, setDetailRecord] = useState<MaintenanceRecord | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const qc = useQueryClient()
 
-  const { data: records, isLoading } = useQuery({
-    queryKey: ['records', currentVehicleId],
-    queryFn: () => getRecords(currentVehicleId || undefined),
+  const { data: paginated, isLoading } = useQuery({
+    queryKey: ['records', currentVehicleId, sortOrder, page, pageSize],
+    queryFn: () => getRecords({ vehicleId: currentVehicleId || undefined, sortOrder, page, pageSize }),
   })
 
   const deleteMut = useMutation({
@@ -410,8 +416,10 @@ export default function RecordsList() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['records'] }),
   })
 
-  const recs: MaintenanceRecord[] = records || []
-  const total = recs.reduce((s, r) => s + r.paid_amount, 0)
+  const recs: MaintenanceRecord[] = paginated?.items || []
+  const totalRecords = paginated?.total || 0
+  const totalPage = Math.ceil(totalRecords / pageSize)
+  const totalAmount = recs.reduce((s, r) => s + r.paid_amount, 0)
 
   const closeModal = () => setModalRecord(null)
 
@@ -420,7 +428,7 @@ export default function RecordsList() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">保养记录</h2>
-          <p className="text-sm text-slate-500 mt-1">共 {recs.length} 条记录 · 累计花费 ¥{total.toLocaleString()}</p>
+          <p className="text-sm text-slate-500 mt-1">共 {totalRecords} 条记录 · 累计花费 ¥{totalAmount.toLocaleString()}</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -430,7 +438,7 @@ export default function RecordsList() {
             <Plus className="w-4 h-4" /> 手动添加
           </button>
           <button
-            onClick={() => setActiveMenu('upload')}
+            onClick={() => navigate('/upload')}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
           >
             <Upload className="w-4 h-4" /> 上传新单据
@@ -441,11 +449,24 @@ export default function RecordsList() {
       {isLoading ? (
         <p className="text-center text-slate-400 py-12">加载中...</p>
       ) : (
+        <>
         <div className="bg-white rounded-xl border border-slate-200">
           <table className="w-full">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">日期</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">
+                  <button
+                    onClick={() => setSortOrder(s => s === 'desc' ? 'asc' : 'desc')}
+                    className="inline-flex items-center gap-1 hover:text-slate-700 transition-colors"
+                    title={sortOrder === 'desc' ? '最新在前，点击切换' : '最早在前，点击切换'}
+                  >
+                    日期
+                    {sortOrder === 'desc'
+                      ? <ArrowDown className="w-3 h-3" />
+                      : <ArrowUp className="w-3 h-3" />
+                    }
+                  </button>
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">里程</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">下次保养</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">保养类型</th>
@@ -484,10 +505,24 @@ export default function RecordsList() {
                         className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-slate-600 border border-slate-200 rounded-md hover:bg-slate-50 hover:border-blue-300 hover:text-blue-600 transition-colors">
                         <Pencil className="w-3 h-3" /> 编辑
                       </button>
-                      <button onClick={() => deleteMut.mutate(r.id)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors">
-                        <Trash2 className="w-3 h-3" /> 删除
-                      </button>
+                      {deletingId === r.id ? (
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs text-red-600">确认？</span>
+                          <button onClick={() => { deleteMut.mutate(r.id); setDeletingId(null) }}
+                            className="px-2 py-1 text-xs text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors">
+                            删除
+                          </button>
+                          <button onClick={() => setDeletingId(null)}
+                            className="px-2 py-1 text-xs text-slate-600 border border-slate-200 rounded-md hover:bg-slate-50 transition-colors">
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setDeletingId(r.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors">
+                          <Trash2 className="w-3 h-3" /> 删除
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -498,6 +533,43 @@ export default function RecordsList() {
             <p className="text-center text-slate-400 py-12 text-sm">暂无保养记录</p>
           )}
         </div>
+
+        {/* 分页控件 */}
+        {totalRecords > 0 && (
+          <div className="flex items-center justify-between mt-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">每页</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+                className="px-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:border-blue-400"
+              >
+                <option value={10}>10 条</option>
+                <option value={25}>25 条</option>
+                <option value={50}>50 条</option>
+              </select>
+              <span className="text-xs text-slate-500">共 {totalRecords} 条</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-0.5"
+              >
+                <ChevronLeft className="w-3 h-3" /> 上一页
+              </button>
+              <span className="text-xs text-slate-500 px-2">{page} / {totalPage || 1}</span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPage || 1, p + 1))}
+                disabled={page >= totalPage}
+                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-0.5"
+              >
+                下一页 <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        )}
+        </>
       )}
 
       {modalRecord !== null && (

@@ -7,10 +7,10 @@ import 'react-pdf/dist/Page/TextLayer.css'
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
 function parseViewerParams() {
-  const hash = location.hash.slice(1)
-  const [path, query] = hash.split('?')
-  const parts = path.split('/')
-  const manualId = parseInt(parts[1]) || 0
+  const hash = location.hash.slice(1)   // /pdf-viewer/1?page=5
+  const [path, query] = hash.split('?') // /pdf-viewer/1
+  const parts = path.split('/')         // ['', 'pdf-viewer', '1']
+  const manualId = parseInt(parts[2]) || 0
   const params = new URLSearchParams(query || '')
   const page = parseInt(params.get('page') || '1') || 1
   return { manualId, page }
@@ -98,6 +98,15 @@ export default function PdfViewerPage() {
   }, [])
 
   const pdfUrl = manualId ? `/api/manuals/${manualId}/file` : ''
+
+  // manualId 未就绪时不渲染 Document，避免 react-pdf 空 URL 报错
+  if (!manualId) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-100">
+        <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div className="h-screen flex flex-col bg-slate-100" onContextMenu={(e) => e.preventDefault()}>

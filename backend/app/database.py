@@ -35,12 +35,34 @@ SEED_TEMPLATES = [
     {"name": "更换正时皮带/链条", "category": "发动机"},
 ]
 
+# 默认管理员账号
+DEFAULT_ADMIN_EMAIL = "admin@carcare.local"
+DEFAULT_ADMIN_PASSWORD = "admin123"  # 首次登录后请修改
+
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    # Seed item_templates if empty
+
     async with async_session() as session:
+        # 创建默认管理员（如果不存在）
+        from app.models.models import User
+        from app.services.auth import hash_password
+
+        result = await session.execute(select(User).where(User.email == DEFAULT_ADMIN_EMAIL))
+        admin = result.scalar_one_or_none()
+        if not admin:
+            admin = User(
+                email=DEFAULT_ADMIN_EMAIL,
+                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+                nickname="管理员",
+                role="admin"
+            )
+            session.add(admin)
+            await session.commit()
+            print(f"默认管理员已创建: {DEFAULT_ADMIN_EMAIL} / {DEFAULT_ADMIN_PASSWORD}")
+
+        # Seed item_templates if empty
         result = await session.execute(text("SELECT COUNT(*) FROM item_templates"))
         count = result.scalar()
         if count == 0:
