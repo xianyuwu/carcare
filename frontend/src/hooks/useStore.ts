@@ -10,6 +10,7 @@ export interface ChatMessage {
   feedback?: 'like' | 'dislike' | null
   sources?: Source[]
   searchSources?: SearchSource[]
+  warning?: string
 }
 
 interface AppState {
@@ -40,14 +41,22 @@ interface AppState {
   checkAuth: () => Promise<void>
 }
 
+// 从 localStorage 恢复上次选中的车辆
+const savedVehicleId = localStorage.getItem('currentVehicleId')
+const initialVehicleId = savedVehicleId ? Number(savedVehicleId) : null
+
 export const useStore = create<AppState>((set, get) => ({
   activeMenu: initialMenu,
   setActiveMenu: (menu) => {
     location.hash = menu
     set({ activeMenu: menu })
   },
-  currentVehicleId: null,
-  setCurrentVehicleId: (id) => set({ currentVehicleId: id }),
+  currentVehicleId: initialVehicleId,
+  setCurrentVehicleId: (id) => {
+    if (id) localStorage.setItem('currentVehicleId', String(id))
+    else localStorage.removeItem('currentVehicleId')
+    set({ currentVehicleId: id })
+  },
   pendingQuestion: null,
   setPendingQuestion: (q) => set({ pendingQuestion: q }),
   chatOpen: false,

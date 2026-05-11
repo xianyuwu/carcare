@@ -382,10 +382,14 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
     elif intent == "2":
         # 保养咨询：完整 RAG pipeline + 引用标注
         vehicle_ctx = await _get_vehicle_context(vehicle_id)
+        rag_warning = ""
         try:
             sources = await _retrieve_context(vehicle_id, question, config)
+            if not sources:
+                rag_warning = "知识库检索未找到相关内容，可能是手册未索引或 Embedding 服务异常，建议检查知识库状态和 Embedding 配置。"
         except Exception as e:
             logger.warning("Embedding 检索失败，降级为无手册上下文: %s", e)
+            rag_warning = f"知识库检索失败（{e}），建议检查 Embedding API 配置和账号状态。"
 
         # 给每个 chunk 编号，方便 LLM 引用
         manual_ctx = ""
@@ -509,8 +513,10 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
         yield "data: [DONE]\n\n"
         return
 
-    # 流式内容结束后，发送引用来源元数据
+    # 流式内容结束后，发送 warning、引用来源元数据
     if completed:
+        if rag_warning:
+            yield f"data: {json.dumps({'type': 'warning', 'data': rag_warning}, ensure_ascii=False)}\n\n"
         if intent == "2" and sources:
             sources_payload = [
                 {

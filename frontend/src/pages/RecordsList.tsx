@@ -575,7 +575,7 @@ export default function RecordsList() {
       {modalRecord !== null && (
         <RecordModal
           record={modalRecord === 'add' ? null : modalRecord}
-          vehicleId={currentVehicleId || 1}
+          vehicleId={currentVehicleId!}
           onClose={closeModal}
         />
       )}

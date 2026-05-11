@@ -3,7 +3,7 @@ import { X, Send, Sparkles, User, ZoomIn, ZoomOut, Wrench, TrendingUp, Droplets,
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useStore, type ChatMessage } from '../hooks/useStore'
-import { chatStream, submitChatFeedback, getManualPageUrl, getManualFileUrl, type Source, type SearchSource } from '../api/client'
+import { chatStream, submitChatFeedback, getManualPageUrl, getManualFileUrl, getToken, type Source, type SearchSource } from '../api/client'
 
 const welcomeCards = [
   { icon: Wrench, text: '我下次该做什么保养？', question: '根据我的保养记录，下次保养需要做什么项目？大概什么时候需要去？' },
@@ -38,15 +38,40 @@ function SourceModal({ source, onClose }: { source: CitationItem; onClose: () =>
   const isWeb = !isSearch && (source as Source).source_type === 'web'
   const isPdf = !isSearch && !isWeb
 
-  // PDF 来源：渲染页面图片
+  // PDF 来源：渲染页面图片（用 fetch + auth header 拿 blob，避免 <img> 不带 token）
   const [loading, setLoading] = useState(true)
+  const [imgError, setImgError] = useState('')
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const dragRef = useRef<{ startX: number; startY: number; offsetX: number; offsetY: number } | null>(null)
 
-  const pageUrl = isPdf && (source as Source).manual_id && (source as Source).page != null
+  // 带鉴权的页面图片 URL（blob URL）
+  const [pageBlobUrl, setPageBlobUrl] = useState<string | null>(null)
+
+  const rawPageUrl = isPdf && (source as Source).manual_id && (source as Source).page != null
     ? getManualPageUrl((source as Source).manual_id, (source as Source).page, (source as Source).text)
     : null
+
+  useEffect(() => {
+    if (!rawPageUrl) return
+    const token = getToken()
+    if (!token) { setImgError('未登录'); setLoading(false); return }
+    let blobUrl = ''
+    fetch(rawPageUrl, { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => {
+        if (!res.ok) throw new Error(`加载失败 (${res.status})`)
+        return res.blob()
+      })
+      .then(blob => {
+        blobUrl = URL.createObjectURL(blob)
+        setPageBlobUrl(blobUrl)
+      })
+      .catch(err => {
+        setImgError(err.message)
+        setLoading(false)
+      })
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }
+  }, [rawPageUrl])
 
   const externalUrl = isSearch ? source.url : (isWeb ? (source as Source).source_url : null)
 
@@ -109,7 +134,7 @@ function SourceModal({ source, onClose }: { source: CitationItem; onClose: () =>
         </div>
 
         {/* PDF 来源：渲染页面图片 */}
-        {isPdf && pageUrl && (
+        {isPdf && rawPageUrl && (
           <div className="flex-1 overflow-hidden bg-slate-100 relative flex flex-col items-center">
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-white/90 backdrop-blur rounded-lg shadow-md border border-slate-200 px-2 py-1">
               <button onClick={() => setScale(s => Math.max(0.5, s - 0.25))} className="w-7 h-7 rounded-md text-slate-500 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors" title="缩小">
@@ -123,15 +148,18 @@ function SourceModal({ source, onClose }: { source: CitationItem; onClose: () =>
               <button onClick={resetView} className="text-xs text-slate-500 hover:text-slate-700 px-1.5 py-0.5 rounded transition-colors" title="重置">重置</button>
             </div>
             <div className="w-full h-full flex items-center justify-center" style={{ cursor: scale > 1 ? (dragRef.current ? 'grabbing' : 'grab') : 'default' }} onMouseDown={onDragStart}>
-              {loading && <div className="flex items-center justify-center"><div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}
-              <img
-                src={pageUrl}
-                alt={`第 ${(source as Source).page! + 1} 页`}
-                className="shadow-lg rounded border border-slate-200 select-none pointer-events-none"
-                style={{ display: loading ? 'none' : 'block', maxWidth: '90%', transform: `scale(${scale}) translate(${offset.x / scale}px, ${offset.y / scale}px)` }}
-                onLoad={() => setLoading(false)}
-                onError={() => setLoading(false)}
-              />
+              {imgError && <p className="text-sm text-slate-400">{imgError}</p>}
+              {loading && !imgError && <div className="flex items-center justify-center"><div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}
+              {pageBlobUrl && (
+                <img
+                  src={pageBlobUrl}
+                  alt={`第 ${(source as Source).page! + 1} 页`}
+                  className="shadow-lg rounded border border-slate-200 select-none pointer-events-none"
+                  style={{ display: loading ? 'none' : 'block', maxWidth: '90%', transform: `scale(${scale}) translate(${offset.x / scale}px, ${offset.y / scale}px)` }}
+                  onLoad={() => setLoading(false)}
+                  onError={() => { setImgError('图片加载失败'); setLoading(false) }}
+                />
+              )}
             </div>
           </div>
         )}
@@ -370,6 +398,7 @@ const ChatBubble = memo(function ChatBubble({
         }`}>
           {msg.role === 'assistant' ? (
             msg.content ? (
+              <>
               <div className="text-sm leading-relaxed prose prose-slate prose-sm max-w-none overflow-x-auto
                 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h1]:text-slate-800
                 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h2]:text-slate-800
@@ -392,6 +421,13 @@ const ChatBubble = memo(function ChatBubble({
                 <CitationMarkdown content={msg.content} sources={msg.sources} searchSources={msg.searchSources} onOpenCitation={onOpenCitation} />
                 <ReferenceBar sources={msg.sources || []} searchSources={msg.searchSources} content={msg.content} />
               </div>
+              {msg.warning && (
+                <div className="flex items-start gap-1.5 mt-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{msg.warning}</span>
+                </div>
+              )}
+              </>
             ) : (
               <div className="flex items-center gap-1.5 py-1">
                 <div className="w-2 h-2 rounded-full bg-blue-400 animate-[bounce_1s_ease-in-out_infinite]" />
@@ -524,7 +560,7 @@ export default function ChatPanel() {
       }
       updated[index] = { ...msg, feedback: type }
       const question = updated.slice(0, index).reverse().find(m => m.role === 'user')?.content || ''
-      submitChatFeedback(currentVehicleId || 1, question, msg.content, type)
+      submitChatFeedback(currentVehicleId!, question, msg.content, type)
       return updated
     })
   }
@@ -554,13 +590,15 @@ export default function ChatPanel() {
     const ac = new AbortController()
     abortRef.current = ac
     try {
-      for await (const event of chatStream(currentVehicleId || 1, question, historySnapshot, ac.signal, searchEnabled)) {
+      for await (const event of chatStream(currentVehicleId!, question, historySnapshot, ac.signal, searchEnabled)) {
         if (event.type === 'content') {
           newMsg.content += event.text
         } else if (event.type === 'sources') {
           newMsg.sources = event.data
         } else if (event.type === 'search_sources') {
           newMsg.searchSources = event.data
+        } else if (event.type === 'warning') {
+          newMsg.warning = event.data
         }
         bufferRef.current.msg = { ...newMsg }
         scheduleFlush()
@@ -608,13 +646,15 @@ export default function ChatPanel() {
     const ac = new AbortController()
     abortRef.current = ac
     try {
-      for await (const event of chatStream(currentVehicleId || 1, question, historySnapshot, ac.signal, searchEnabled)) {
+      for await (const event of chatStream(currentVehicleId!, question, historySnapshot, ac.signal, searchEnabled)) {
         if (event.type === 'content') {
           assistantMsg.content += event.text
         } else if (event.type === 'sources') {
           assistantMsg.sources = event.data
         } else if (event.type === 'search_sources') {
           assistantMsg.searchSources = event.data
+        } else if (event.type === 'warning') {
+          assistantMsg.warning = event.data
         }
         bufferRef.current.msg = { ...assistantMsg }
         scheduleFlush()

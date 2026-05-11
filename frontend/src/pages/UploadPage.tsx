@@ -1325,7 +1325,7 @@ export default function UploadPage() {
     for (const entry of confirmed) {
       const date = entry.ocrResult!.fields.date || new Date().toISOString().slice(0, 10)
       try {
-        const dup = await checkDuplicateRecord(currentVehicleId || 1, date)
+        const dup = await checkDuplicateRecord(currentVehicleId!, date)
         if (dup.exists) duplicates.push({ date, count: dup.count })
       } catch {}
     }
@@ -1339,7 +1339,7 @@ export default function UploadPage() {
       const r = entry.ocrResult!
       try {
         await createRecord({
-          vehicle_id: currentVehicleId || 1,
+          vehicle_id: currentVehicleId!,
           date: r.fields.date || new Date().toISOString().slice(0, 10),
           mileage: r.fields.mileage ? parseInt(r.fields.mileage) : null,
           next_mileage: r.fields.next_mileage ? parseInt(r.fields.next_mileage) : null,
@@ -1518,7 +1518,7 @@ export default function UploadPage() {
               imgScale={imgScale} onZoomIn={zoomIn} onZoomOut={zoomOut} onFitWidth={fitWidth} onFitPage={fitPage}
               imageContainerRef={imageContainerRef} naturalSize={naturalSize} onFieldClick={handleFieldClick}
               getFieldConf={(k: string) => getFieldConf(k, ocrResult)} confDisplay={confDisplay} confNeedsReview={confNeedsReview}
-              matchItemTemplates={matchItemTemplates} vehicleId={currentVehicleId || 1}
+              matchItemTemplates={matchItemTemplates} vehicleId={currentVehicleId!}
               onSaveSuccess={() => { setStep(4); qc.invalidateQueries({ queryKey: ['records'] }) }}
               onReset={() => { setStep(1); setOcrResult(null); setEditedFields({}); setEditedFieldsConf({}); setHighlightedField(null); setItemMatches({}) }}
               showAllHighlights={showAllHighlights} setShowAllHighlights={setShowAllHighlights}
@@ -1660,7 +1660,7 @@ export default function UploadPage() {
                     confDisplay={confDisplay}
                     confNeedsReview={confNeedsReview}
                     matchItemTemplates={matchItemTemplates}
-                    vehicleId={currentVehicleId || 1}
+                    vehicleId={currentVehicleId!}
                     onSaveSuccess={() => handleBatchConfirm(batchReviewIdx)}
                     onReset={() => setBatchReviewIdx(-1)}
                     showAllHighlights={showAllHighlights}

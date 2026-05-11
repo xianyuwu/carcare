@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, Pencil, Camera } from 'lucide-react'
-import { getVehicles, createVehicle, updateVehicle, deleteVehicle, uploadVehiclePhoto, type Vehicle } from '../api/client'
+import { Plus, Trash2, Pencil, Camera, AlertTriangle } from 'lucide-react'
+import { getVehicles, createVehicle, updateVehicle, deleteVehicle, uploadVehiclePhoto, checkVehicleDelete, type Vehicle } from '../api/client'
 import { useStore } from '../hooks/useStore'
 import { useState, useRef } from 'react'
 
@@ -13,6 +13,11 @@ export default function VehiclePage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
   const photoRef = useRef<HTMLInputElement>(null)
+  // 删除确认弹窗
+  const [deleteTarget, setDeleteTarget] = useState<Vehicle | null>(null)
+  const [deleteCheck, setDeleteCheck] = useState<{ record_count: number; manual_count: number } | null>(null)
+  const [checkingDelete, setCheckingDelete] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
   const { data: vehicles } = useQuery({ queryKey: ['vehicles'], queryFn: getVehicles })
 
@@ -77,6 +82,32 @@ export default function VehiclePage() {
       if (file) photoMut.mutate({ id: v.id, file })
     }
     input.click()
+  }
+
+  // 点击删除 → 先调预检查接口，再弹确认框
+  async function handleDeleteClick(v: Vehicle) {
+    setDeleteTarget(v)
+    setDeleteCheck(null)
+    setCheckingDelete(true)
+    try {
+      const check = await checkVehicleDelete(v.id)
+      setDeleteCheck(check)
+    } catch {
+      setDeleteCheck({ record_count: 0, manual_count: 0 })
+    }
+    setCheckingDelete(false)
+  }
+
+  function confirmDelete() {
+    if (!deleteTarget) return
+    deleteMut.mutate(deleteTarget.id)
+    closeDeleteDialog()
+  }
+
+  function closeDeleteDialog() {
+    setDeleteTarget(null)
+    setDeleteCheck(null)
+    setDeleteConfirmText('')
   }
 
   return (
@@ -178,7 +209,7 @@ export default function VehiclePage() {
                   <Pencil className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); if (confirm(`确认删除 ${v.brand} ${v.model}？`)) deleteMut.mutate(v.id) }}
+                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(v) }}
                   className="text-red-400 hover:text-red-600 transition-colors"
                   title="删除"
                 >
@@ -194,6 +225,76 @@ export default function VehiclePage() {
           </div>
         )}
       </div>
+
+      {/* 删除确认弹窗 */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={closeDeleteDialog}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+              </div>
+              <div>
+                <h4 className="text-base font-semibold text-slate-800">确认删除车辆</h4>
+                <p className="text-sm text-slate-500">{deleteTarget.brand} {deleteTarget.model}</p>
+              </div>
+            </div>
+
+            {checkingDelete ? (
+              <div className="flex items-center gap-2 py-4 text-sm text-slate-400">
+                <div className="w-4 h-4 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+                检查关联数据...
+              </div>
+            ) : deleteCheck && (deleteCheck.record_count > 0 || deleteCheck.manual_count > 0) ? (
+              <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg">
+                <p className="text-sm text-red-600 font-medium mb-2">以下数据将被永久删除：</p>
+                <ul className="text-sm text-red-600 space-y-1">
+                  {deleteCheck.record_count > 0 && (
+                    <li>• {deleteCheck.record_count} 条保养记录（含所有项目明细）</li>
+                  )}
+                  {deleteCheck.manual_count > 0 && (
+                    <li>• {deleteCheck.manual_count} 本保养手册（含向量索引）</li>
+                  )}
+                </ul>
+                <p className="text-xs text-red-400 mt-2">此操作不可撤销</p>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500 mb-4">该车辆暂无保养记录和手册，删除后不可恢复。</p>
+            )}
+
+            {!checkingDelete && (
+              <div className="mb-4">
+                <p className="text-xs text-slate-500 mb-1.5">
+                  请输入 <span className="font-medium text-slate-700">{deleteTarget.brand} {deleteTarget.model}</span> 确认删除
+                </p>
+                <input
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder={`${deleteTarget.brand} ${deleteTarget.model}`}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-red-400"
+                  autoFocus
+                />
+              </div>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={closeDeleteDialog}
+                className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={checkingDelete || deleteConfirmText !== `${deleteTarget.brand} ${deleteTarget.model}`}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

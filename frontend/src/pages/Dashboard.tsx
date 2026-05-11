@@ -129,11 +129,14 @@ function SpendingPieChart({ recs }: { recs: MaintenanceRecord[] }) {
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
-  const { setChatOpen, setPendingQuestion } = useStore()
+  const { setChatOpen, setPendingQuestion, currentVehicleId } = useStore()
   const { data: vehicles } = useQuery({ queryKey: ['vehicles'], queryFn: getVehicles })
-  const { data: paginated } = useQuery({ queryKey: ['records'], queryFn: () => getRecords({ pageSize: 100 }) })
+  const { data: paginated } = useQuery({
+    queryKey: ['records', currentVehicleId, 'dashboard'],
+    queryFn: () => getRecords({ vehicleId: currentVehicleId || undefined, pageSize: 100 }),
+  })
 
-  const vehicle: Vehicle | undefined = vehicles?.[0]
+  const vehicle: Vehicle | undefined = vehicles?.find((v: Vehicle) => v.id === currentVehicleId)
   const recs: MaintenanceRecord[] = paginated?.items || []
   const totalCount = recs.length
   const totalAmount = recs.reduce((s, r) => s + r.paid_amount, 0)

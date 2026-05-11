@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, Upload,
   BookOpen, Car, Wrench, Settings, MessageSquare,
-  PanelLeftClose, PanelLeft, LogOut, Shield
+  PanelLeftClose, PanelLeft, LogOut, Shield, ChevronDown
 } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useStore } from './hooks/useStore'
+import { getVehicles, uploadVehiclePhoto, type Vehicle } from './api/client'
 import Dashboard from './pages/Dashboard'
 import RecordsList from './pages/RecordsList'
 import UploadPage from './pages/UploadPage'
@@ -27,6 +29,48 @@ interface User {
   role: string
 }
 
+// 车辆头像（照片 + 上传按钮）
+function VehicleAvatar({ vehicle, onUploaded }: { vehicle: Vehicle | undefined; onUploaded: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !vehicle) return
+    setUploading(true)
+    try {
+      await uploadVehiclePhoto(vehicle.id, file)
+      onUploaded()
+    } catch { /* 上传失败静默处理 */ }
+    setUploading(false)
+    // 清空 input，允许重复选同一文件
+    e.target.value = ''
+  }
+
+  return (
+    <div className="relative shrink-0 group">
+      <div className="w-8 h-8 rounded-lg overflow-hidden bg-gradient-to-br from-blue-500 to-indigo-500 flex items-center justify-center text-white">
+        {uploading ? (
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        ) : vehicle?.photo_url ? (
+          <img src={vehicle.photo_url} className="w-full h-full object-cover" />
+        ) : (
+          <span className="text-xs font-bold">{vehicle?.brand?.[0] || '?'}</span>
+        )}
+      </div>
+      {/* hover 时显示上传小按钮 */}
+      <button
+        onClick={() => fileRef.current?.click()}
+        className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-white border border-slate-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-50"
+        title="更换车辆照片"
+      >
+        <Upload className="w-2.5 h-2.5 text-blue-500" />
+      </button>
+      <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} className="hidden" />
+    </div>
+  )
+}
+
 // 侧边栏组件（品牌 + 菜单 + 底部用户信息）
 function Sidebar({
   user,
@@ -39,6 +83,23 @@ function Sidebar({
   const location = useLocation()
   const collapsed = useStore((s) => s.sidebarCollapsed)
   const setCollapsed = useStore((s) => s.setSidebarCollapsed)
+  const currentVehicleId = useStore((s) => s.currentVehicleId)
+  const setCurrentVehicleId = useStore((s) => s.setCurrentVehicleId)
+  const qc = useQueryClient()
+
+  // 获取车辆列表
+  const { data: vehicles } = useQuery({ queryKey: ['vehicles'], queryFn: getVehicles })
+
+  // 自动选择：如果 currentVehicleId 为 null 或对应的车辆不存在，自动选第一辆
+  useEffect(() => {
+    if (!vehicles?.length) return
+    const exists = vehicles.some((v: Vehicle) => v.id === currentVehicleId)
+    if (!exists) {
+      setCurrentVehicleId(vehicles[0].id)
+    }
+  }, [vehicles, currentVehicleId, setCurrentVehicleId])
+
+  const currentVehicle = vehicles?.find((v: Vehicle) => v.id === currentVehicleId)
 
   // 从 pathname 获取当前菜单（HashRouter 下 pathname 即 hash 路径）
   const activeMenu = location.pathname.split('/')[1] || 'dashboard'
@@ -88,6 +149,46 @@ function Sidebar({
           </div>
         )}
       </div>
+
+      {/* 车辆选择器：只有一辆车时不显示，只有 >1 辆车才展示切换 */}
+      {vehicles && vehicles.length > 1 && (
+        <div className={`px-2 py-2 border-b border-slate-100 ${collapsed ? 'flex justify-center' : ''}`}>
+          {collapsed ? (
+            <div
+              className="w-8 h-8 rounded-lg overflow-hidden bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 flex items-center justify-center cursor-pointer hover:from-blue-100 hover:to-indigo-100 transition-colors text-xs font-bold text-blue-600"
+              title={currentVehicle ? `${currentVehicle.brand} ${currentVehicle.model}` : '选择车辆'}
+            >
+              {currentVehicle?.photo_url
+                ? <img src={currentVehicle.photo_url} className="w-full h-full object-cover" />
+                : currentVehicle?.brand?.[0] || <Car className="w-3.5 h-3.5" />
+              }
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              {/* 车辆照片/头像 + 上传按钮 */}
+              <VehicleAvatar
+                vehicle={currentVehicle}
+                onUploaded={() => qc.invalidateQueries({ queryKey: ['vehicles'] })}
+              />
+              {/* 下拉选择 */}
+              <div className="relative flex-1">
+                <select
+                  value={currentVehicleId || ''}
+                  onChange={(e) => setCurrentVehicleId(Number(e.target.value))}
+                  className="w-full appearance-none bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-lg px-3 py-2 pr-8 text-sm text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-200 cursor-pointer transition-all hover:from-blue-100 hover:to-indigo-100"
+                >
+                  {vehicles.map((v: Vehicle) => (
+                    <option key={v.id} value={v.id}>
+                      {v.brand} {v.model}{v.license_plate ? ` · ${v.license_plate}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-blue-400 pointer-events-none" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 菜单区 */}
       <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">

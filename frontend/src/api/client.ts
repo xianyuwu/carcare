@@ -215,6 +215,8 @@ export const updateVehicle = (id: number, data: Partial<Vehicle>) =>
   request<Vehicle>(`/vehicles/${id}`, { method: 'PUT', body: JSON.stringify(data) })
 export const deleteVehicle = (id: number) =>
   request<{ ok: boolean }>(`/vehicles/${id}`, { method: 'DELETE' })
+export const checkVehicleDelete = (id: number) =>
+  request<{ record_count: number; manual_count: number }>(`/vehicles/${id}/delete-check`)
 export const uploadVehiclePhoto = async (id: number, file: File) => {
   const form = new FormData()
   form.append('file', file)
@@ -596,6 +598,7 @@ export type ChatStreamEvent =
   | { type: 'content'; text: string }
   | { type: 'sources'; data: Source[] }
   | { type: 'search_sources'; data: SearchSource[] }
+  | { type: 'warning'; data: string }
 
 export async function* chatStream(vehicleId: number, question: string, history: { role: string; content: string }[] = [], signal?: AbortSignal, search?: boolean): AsyncGenerator<ChatStreamEvent> {
   const token = getToken()
@@ -633,6 +636,8 @@ export async function* chatStream(vehicleId: number, question: string, history: 
             yield { type: 'sources', data: parsed.data }
           } else if (parsed.type === 'search_sources') {
             yield { type: 'search_sources', data: parsed.data }
+          } else if (parsed.type === 'warning') {
+            yield { type: 'warning', data: parsed.data }
           } else if (parsed.content) {
             yield { type: 'content', text: parsed.content }
           }

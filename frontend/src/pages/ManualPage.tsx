@@ -138,7 +138,7 @@ export default function ManualPage() {
       {/* 三步向导弹窗 */}
       {wizardOpen && (
         <AddKnowledgeWizard
-          vehicleId={currentVehicleId || 1}
+          vehicleId={currentVehicleId!}
           onClose={() => setWizardOpen(false)}
           onSuccess={() => {
             qc.invalidateQueries({ queryKey: ['manuals'] })

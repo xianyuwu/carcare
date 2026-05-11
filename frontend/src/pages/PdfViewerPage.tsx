@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { X, ZoomIn, ZoomOut, RotateCw, FileText } from 'lucide-react'
+import { getToken } from '../api/client'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
 function parseViewerParams() {
-  const hash = location.hash.slice(1)   // /pdf-viewer/1?page=5
-  const [path, query] = hash.split('?') // /pdf-viewer/1
-  const parts = path.split('/')         // ['', 'pdf-viewer', '1']
-  const manualId = parseInt(parts[2]) || 0
+  // 兼容 #/pdf-viewer/1 和 #pdf-viewer/1 两种格式
+  const hash = location.hash.slice(1)          // /pdf-viewer/1 或 pdf-viewer/1
+  const [path, query] = hash.split('?')
+  const parts = path.split('/').filter(Boolean) // ['pdf-viewer', '1']
+  const manualId = parseInt(parts[1]) || 0
   const params = new URLSearchParams(query || '')
   const page = parseInt(params.get('page') || '1') || 1
   return { manualId, page }
@@ -22,16 +24,40 @@ export default function PdfViewerPage() {
   const [scale, setScale] = useState(1.2)
   const [rotation, setRotation] = useState(0)
   const [manualId, setManualId] = useState(0)
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const initialScrollDone = useRef(false)
 
+  // 解析 URL 参数，然后带 token 请求 PDF 二进制数据
   useEffect(() => {
     const { manualId: id, page } = parseViewerParams()
     setManualId(id)
     setCurrentPage(page)
+
+    if (!id) return
+    const token = getToken()
+    if (!token) { setError('未登录，请先登录'); setLoading(false); return }
+
+    // 用 fetch 带 Authorization header 拿 PDF，转 blob URL 给 react-pdf
+    let blobUrl = ''
+    fetch(`/api/manuals/${id}/file`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => {
+        if (!res.ok) throw new Error(`加载失败 (${res.status})`)
+        return res.blob()
+      })
+      .then(blob => {
+        blobUrl = URL.createObjectURL(blob)
+        setPdfBlobUrl(blobUrl)
+      })
+      .catch(err => {
+        setError(err.message)
+        setLoading(false)
+      })
+
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }
   }, [])
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
@@ -97,13 +123,25 @@ export default function PdfViewerPage() {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  const pdfUrl = manualId ? `/api/manuals/${manualId}/file` : ''
+  // 加载失败时显示错误（fetch 失败 pdfBlobUrl 为 null 但 error 有值）
+  if (error) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-slate-100 gap-3">
+        <FileText className="w-12 h-12 text-slate-300" />
+        <p className="text-sm text-slate-500">{error}</p>
+        <button onClick={() => window.close()} className="text-xs text-blue-500 hover:underline">关闭</button>
+      </div>
+    )
+  }
 
-  // manualId 未就绪时不渲染 Document，避免 react-pdf 空 URL 报错
-  if (!manualId) {
+  // 等 blob URL 就绪再渲染 Document
+  if (!pdfBlobUrl) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-100">
-        <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs text-slate-400">正在加载文档...</p>
+        </div>
       </div>
     )
   }
@@ -158,7 +196,7 @@ export default function PdfViewerPage() {
           </div>
         ) : (
           <Document
-            file={pdfUrl}
+            file={pdfBlobUrl}
             onLoadSuccess={onDocumentLoadSuccess}
             onLoadError={onDocumentLoadError}
             loading={

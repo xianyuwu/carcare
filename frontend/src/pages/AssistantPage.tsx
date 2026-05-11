@@ -56,7 +56,7 @@ export default function AssistantPage() {
     const ac = new AbortController()
     abortRef.current = ac
     try {
-      for await (const chunk of chatStream(currentVehicleId || 1, question, [], ac.signal)) {
+      for await (const chunk of chatStream(currentVehicleId!, question, [], ac.signal)) {
         assistantMsg.content += chunk
         setMessages((prev) => {
           const updated = [...prev]

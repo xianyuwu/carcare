@@ -6,7 +6,7 @@ import shutil
 import uuid
 
 from app.database import get_db
-from app.models import Vehicle, VehicleShare, User
+from app.models import Vehicle, VehicleShare, User, MaintenanceRecord, Manual
 from app.schemas import VehicleCreate, VehicleUpdate, VehicleOut, VehicleShareCreate, VehicleShareOut
 from app.routers.auth import get_current_user
 
@@ -159,6 +159,32 @@ async def update_vehicle(
     await db.commit()
     await db.refresh(vehicle)
     return _with_photo_url(vehicle)
+
+
+@router.get("/{vehicle_id}/delete-check")
+async def delete_check(
+    vehicle_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """删除前检查关联数据数量"""
+    vehicle = await db.get(Vehicle, vehicle_id)
+    if not vehicle:
+        raise HTTPException(404, "车辆不存在")
+    if vehicle.owner_id != current_user.id:
+        raise HTTPException(403, "只有车主可以删除车辆")
+
+    record_count = (await db.execute(
+        select(MaintenanceRecord).where(MaintenanceRecord.vehicle_id == vehicle_id)
+    )).scalars().all()
+    manual_count = (await db.execute(
+        select(Manual).where(Manual.vehicle_id == vehicle_id)
+    )).scalars().all()
+
+    return {
+        "record_count": len(record_count),
+        "manual_count": len(manual_count),
+    }
 
 
 @router.delete("/{vehicle_id}")
