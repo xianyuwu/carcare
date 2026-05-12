@@ -1,0 +1,72 @@
+# ─── CarCare 生产部署 ───
+# 启动：docker compose up -d
+# 查看日志：docker compose logs -f
+# 停止：docker compose down
+
+services:
+  app:
+    build: .
+    container_name: carcare-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据（SQLite DB + 上传文件 + 向量库）
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      # 无 DATABASE_URL 默认 SQLite（/app/data/carcare.db）
+      - STORAGE_DIR=/app/data/files
+
+  # === 可选：Caddy 反向代理（自动 HTTPS） ===
+  # 不需要 HTTPS 可以删掉这个 service
+  # caddy:
+  #   image: caddy:alpine
+  #   container_name: carcare-caddy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #   depends_on:
+  #     - app
+
+  # === 可选：PostgreSQL（取消注释启用） ===
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: carcare-pg
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: carcare
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: carcare
+  #   volumes:
+  #     - pg_data:/var/lib/postgresql/data
+  #   # 启用 PG 时，在 .env 设置：
+  #   # DATABASE_URL=postgresql+asyncpg://carcare:changeme@postgres:5432/carcare
+
+  # === 可选：MinIO 对象存储（取消注释启用） ===
+  # minio:
+  #   image: minio/minio:latest
+  #   container_name: carcare-minio
+  #   restart: unless-stopped
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     MINIO_ROOT_USER: minioadmin
+  #     MINIO_ROOT_PASSWORD: minioadmin
+  #   volumes:
+  #     - minio_data:/data
+  #   # 启用 MinIO 时，在 .env 设置：
+  #   # STORAGE_BACKEND=s3
+  #   # S3_ENDPOINT=http://minio:9000
+  #   # S3_ACCESS_KEY=minioadmin
+  #   # S3_SECRET_KEY=minioadmin
+  #   # S3_BUCKET=carcare
+
+# volumes:
+#   caddy_data:
+#   pg_data:
+#   minio_data:

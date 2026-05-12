@@ -15,8 +15,8 @@ class User(Base):
     nickname = Column(String(100), default="")
     role = Column(String(20), default="member")  # admin | member
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     # 关联
     vehicles = relationship("Vehicle", back_populates="owner")
@@ -31,7 +31,7 @@ class VehicleShare(Base):
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     permission = Column(String(20), default="read")  # read | write
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     vehicle = relationship("Vehicle", back_populates="shares")
     user = relationship("User", back_populates="vehicle_shares_received")
@@ -50,7 +50,7 @@ class Vehicle(Base):
     purchase_date = Column(String(20))
     current_mileage = Column(Integer, default=0)
     photo_path = Column(String(500), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     owner = relationship("User", back_populates="vehicles")
     records = relationship("MaintenanceRecord", back_populates="vehicle", cascade="all, delete-orphan")
@@ -75,7 +75,7 @@ class MaintenanceRecord(Base):
     station = Column(String(200))
     notes = Column(Text)
     ocr_raw = Column(Text)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     vehicle = relationship("Vehicle", back_populates="records")
     items = relationship("MaintenanceItem", back_populates="record", cascade="all, delete-orphan")
@@ -111,7 +111,7 @@ class ItemTemplate(Base):
     reference_labor_cost = Column(Float, default=0)
     category = Column(String(100), default="其他")
     notes = Column(Text, default="")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class Setting(Base):
@@ -129,7 +129,7 @@ class Manual(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 上传者
     filename = Column(String(500), nullable=False)
     file_path = Column(String(500), nullable=False)
-    upload_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    upload_date = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     page_count = Column(Integer, default=0)
     chunk_count = Column(Integer, default=0)
     status = Column(String(20), default="pending")
@@ -154,7 +154,7 @@ class AIPrediction(Base):
     estimated_cost = Column(Float, default=0)
     cost_reasoning = Column(Text, default="")
     cost_breakdown = Column(JSON, default=list)
-    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class ChatFeedback(Base):
@@ -166,7 +166,7 @@ class ChatFeedback(Base):
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     feedback = Column(String(10), nullable=False)  # like / dislike
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class SearchUsage(Base):
@@ -175,4 +175,4 @@ class SearchUsage(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     query = Column(Text, nullable=False)
     credits = Column(Integer, default=1)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

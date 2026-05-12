@@ -1,0 +1,27 @@
+# Python
+__pycache__
+*.pyc
+.venv
+venv
+*.egg-info
+
+# 开发数据
+backend/data/carcare.db
+backend/data/files/
+backend/data/chroma/
+backend/data/manual_pages/
+backend/data/vehicle_photos/
+backend/data/uploads/
+backend/.env
+
+# Node
+frontend/node_modules
+frontend/dist
+
+# IDE
+.vscode
+.idea
+
+# Git
+.git
+.gitignore

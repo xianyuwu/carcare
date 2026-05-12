@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="CarCare API", version="1.0.0", lifespan=lifespan)
 
+cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in cors_origins if o.strip()] or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,11 +39,17 @@ app.include_router(dashboard.router)
 app.include_router(auth.router)
 app.include_router(admin_users.router)
 
+# Health check（Docker / K8s 探活）
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
 # Serve vehicle photos
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/api/vehicle-photos", StaticFiles(directory=str(PHOTO_DIR)), name="vehicle-photos")
 
 # Serve frontend build in production
-frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+# 优先环境变量（Docker），fallback 到本地项目结构
+frontend_dist = Path(os.getenv("FRONTEND_DIST", str(Path(__file__).resolve().parent.parent.parent / "frontend" / "dist")))
 if frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")

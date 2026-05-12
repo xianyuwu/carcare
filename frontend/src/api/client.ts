@@ -359,24 +359,10 @@ export const testOCR = () => request<{ ok: boolean; provider?: string; recognize
 export const testRAG = () => request<{ ok: boolean; errors?: string[]; info?: Record<string, any>; elapsed?: number }>('/settings/test-rag', { method: 'POST' })
 export const testSearch = () => request<{ ok: boolean; query?: string; results?: number; elapsed?: number; error?: string }>('/settings/test-search', { method: 'POST' })
 export const getSearchUsage = () => request<{
-  month: string
-  local_used: number
+  date: string
   used: number
-  monthly_limit: number
+  limit: number
   remaining: number
-  tavily: {
-    account?: {
-      current_plan?: string
-      plan_usage?: number
-      plan_limit?: number
-      search_usage?: number
-    }
-    key?: {
-      usage?: number
-      limit?: number | null
-      search_usage?: number
-    }
-  } | null
 }>('/settings/search-usage')
 
 // --- Manuals ---
