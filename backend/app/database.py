@@ -1,13 +1,25 @@
+import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import select, text
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
-DB_PATH = DATA_DIR / "carcare.db"
+logger = logging.getLogger(__name__)
 
-engine = create_async_engine(f"sqlite+aiosqlite:///{DB_PATH}", echo=False)
+# 环境变量切换数据库：不设默认为 SQLite，设为 PG 连接串则用 PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if DATABASE_URL:
+    # PostgreSQL: postgresql+asyncpg://user:pass@host:5432/dbname
+    engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
+    logger.info("数据库: PostgreSQL (%s)", DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL)
+else:
+    DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+    DATA_DIR.mkdir(exist_ok=True)
+    DB_PATH = DATA_DIR / "carcare.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{DB_PATH}", echo=False)
+    logger.info("数据库: SQLite (%s)", DB_PATH)
+
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
