@@ -5,6 +5,15 @@ import remarkGfm from 'remark-gfm'
 import { useStore, type ChatMessage } from '../hooks/useStore'
 import { chatStream, submitChatFeedback, getManualPageUrl, getManualFileUrl, getToken, type Source, type SearchSource } from '../api/client'
 
+// 全局事件总线：挂 window 上避免 Vite HMR 重建导致监听丢失
+const _win = window as any
+if (!_win.__citationBus) _win.__citationBus = new EventTarget()
+const citationBus: EventTarget = _win.__citationBus
+
+export function emitCitationOpen(item: CitationItem) {
+  citationBus.dispatchEvent(new CustomEvent('open', { detail: item }))
+}
+
 const welcomeCards = [
   { icon: Wrench, text: '我下次该做什么保养？', question: '根据我的保养记录，下次保养需要做什么项目？大概什么时候需要去？' },
   { icon: TrendingUp, text: '帮我分析养车成本', question: '帮我分析一下我的养车成本，包括花费趋势和各项占比，看看有没有优化空间。' },
@@ -15,20 +24,19 @@ const welcomeCards = [
 const MESSAGE_WARNING_THRESHOLD = 50
 
 // --- 引用标注组件（纯展示，modal 由 ChatPanel 渲染） ---
-function CitationBadge({ source, onOpen }: { source: CitationItem; onOpen: (item: CitationItem) => void }) {
+function CitationBadge({ source }: { source: CitationItem }) {
   return (
-    <span>
-      <sup
-        className="cursor-pointer inline-flex items-center justify-center rounded-full bg-indigo-300 text-indigo-700 hover:bg-indigo-400 transition-colors ml-0.5 px-[5px] py-[1px] text-[11px] leading-none font-normal"
-        onClick={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          onOpen(source)
-        }}
-      >
-        {source.id}
-      </sup>
-    </span>
+    <sup
+      className="cursor-pointer inline-flex items-center justify-center rounded-full bg-indigo-300 text-indigo-700 hover:bg-indigo-400 transition-colors ml-0.5 px-[5px] py-[1px] text-[11px] leading-none font-normal select-none"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        emitCitationOpen(source)
+      }}
+      title={`查看引用来源 ${source.id}`}
+    >
+      {source.id}
+    </sup>
   )
 }
 
@@ -115,10 +123,10 @@ function SourceModal({ source, onClose }: { source: CitationItem; onClose: () =>
         : null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className="relative bg-white rounded-xl shadow-2xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+        className="relative bg-white rounded-xl shadow-2xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col overflow-hidden pointer-events-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 顶部信息栏 */}
@@ -201,11 +209,10 @@ function isSearchCitation(item: CitationItem): item is SearchSource & { _kind: '
 }
 
 // --- 带 引用标注的 Markdown 渲染 ---
-function CitationMarkdown({ content, sources, searchSources, onOpenCitation }: {
+function CitationMarkdown({ content, sources, searchSources }: {
   content: string
   sources?: Source[]
   searchSources?: SearchSource[]
-  onOpenCitation: (item: CitationItem) => void
 }) {
   // 构建 id → CitationItem 的映射，合并手册来源和搜索来源
   const citationMap = useMemo(() => {
@@ -239,7 +246,7 @@ function CitationMarkdown({ content, sources, searchSources, onOpenCitation }: {
           if (href?.startsWith('citation:')) {
             const id = parseInt(href.replace('citation:', ''))
             const item = citationMap.get(id)
-            if (item) return <CitationBadge source={item} onOpen={onOpenCitation} />
+            if (item) return <CitationBadge source={item} />
           }
           return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
         },
@@ -368,14 +375,13 @@ function ReferenceBar({ sources, searchSources, content }: {
 // --- 消息气泡（memo 包裹，避免流式更新时历史消息重渲染）---
 const ChatBubble = memo(function ChatBubble({
   msg, index, isLastAssistant, streaming, copiedId,
-  onOpenCitation, onFeedback, onCopy, onRegenerate,
+  onFeedback, onCopy, onRegenerate,
 }: {
   msg: ChatMessage
   index: number
   isLastAssistant: boolean
   streaming: boolean
   copiedId: number | null
-  onOpenCitation: (item: CitationItem) => void
   onFeedback: (i: number, type: 'like' | 'dislike') => void
   onCopy: (i: number) => void
   onRegenerate: (i: number) => void
@@ -418,7 +424,7 @@ const ChatBubble = memo(function ChatBubble({
                 [&_tbody_tr:nth-child(even)]:bg-slate-50
                 [&_a]:text-purple-600 [&_a]:underline
               ">
-                <CitationMarkdown content={msg.content} sources={msg.sources} searchSources={msg.searchSources} onOpenCitation={onOpenCitation} />
+                <CitationMarkdown content={msg.content} sources={msg.sources} searchSources={msg.searchSources} />
                 <ReferenceBar sources={msg.sources || []} searchSources={msg.searchSources} content={msg.content} />
               </div>
               {msg.warning && (
@@ -522,9 +528,22 @@ export default function ChatPanel() {
   // Modal 状态：当前查看的引用来源（手册或搜索来源）
   const [modalSource, setModalSource] = useState<CitationItem | null>(null)
 
-  function openCitation(item: CitationItem) {
-    setModalSource(item)
-  }
+  const modalSourceRef = useRef(modalSource)
+  modalSourceRef.current = modalSource
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const item = (e as CustomEvent).detail as CitationItem
+      if (modalSourceRef.current) {
+        setModalSource(null)
+        setTimeout(() => setModalSource(item), 50)
+      } else {
+        setModalSource(item)
+      }
+    }
+    citationBus.addEventListener('open', handler)
+    return () => citationBus.removeEventListener('open', handler)
+  }, [])
 
   function stopStreaming() {
     abortRef.current?.abort()
@@ -775,7 +794,6 @@ export default function ChatPanel() {
                   isLastAssistant={i === chatMessages.length - 1 && msg.role === 'assistant'}
                   streaming={streaming}
                   copiedId={copiedId}
-                  onOpenCitation={openCitation}
                   onFeedback={handleFeedback}
                   onCopy={handleCopy}
                   onRegenerate={regenerate}
@@ -857,6 +875,7 @@ export default function ChatPanel() {
       {/* 引用来源 Modal */}
       {modalSource && (
         <SourceModal
+          key={modalSource.id}
           source={modalSource}
           onClose={() => setModalSource(null)}
         />

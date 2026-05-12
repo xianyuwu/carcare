@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from pathlib import Path
-import shutil
 import uuid
 
 from app.database import get_db
@@ -12,8 +11,6 @@ from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/vehicles", tags=["vehicles"])
 
-PHOTO_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "vehicle_photos"
-PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _with_photo_url(vehicle: Vehicle) -> dict:
@@ -200,9 +197,8 @@ async def delete_vehicle(
     if vehicle.owner_id != current_user.id:
         raise HTTPException(403, "只有车主可以删除车辆")
     if vehicle.photo_path:
-        old = PHOTO_DIR / vehicle.photo_path
-        if old.exists():
-            old.unlink()
+        from app.storage import get_storage
+        get_storage().delete(f"vehicles/{vehicle.id}/{vehicle.photo_path}")
     await db.delete(vehicle)
     await db.commit()
     return {"ok": True}
@@ -225,15 +221,14 @@ async def upload_vehicle_photo(
     ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
 
-    dest = PHOTO_DIR / filename
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    from app.storage import get_storage
+    storage = get_storage()
+    content = await file.read()
+    storage.save(f"vehicles/{vehicle_id}/{filename}", content, file.content_type or "image/jpeg")
 
     # 删除旧照片
     if vehicle.photo_path:
-        old = PHOTO_DIR / vehicle.photo_path
-        if old.exists():
-            old.unlink()
+        storage.delete(f"vehicles/{vehicle_id}/{vehicle.photo_path}")
 
     vehicle.photo_path = filename
     await db.commit()

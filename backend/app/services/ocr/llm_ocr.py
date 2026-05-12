@@ -20,7 +20,7 @@ from PIL import Image, ImageOps
 
 from app.schemas import OCRResult, OCRBlock, OCRItem
 from app.services.ocr.base import BaseOCR
-from app.services.ocr.prompts import SYSTEM_PROMPT, build_user_prompt
+from app.services.ocr.prompts import SYSTEM_PROMPT, build_user_prompt, build_continuation_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,17 @@ def _build_default_result() -> dict:
     }
 
 
+def _ensure_dict(result) -> dict:
+    """确保 LLM 返回值是 dict；若为数组则取首个元素。"""
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        logger.warning(f"LLM 返回了数组而非对象，自动取首个元素")
+        return result[0]
+    logger.error(f"LLM 返回了非 dict/list 类型: {type(result).__name__}")
+    return {}
+
+
 def _merge_defaults(result: dict) -> dict:
     """
     将模型返回的 dict 与默认结构合并：
@@ -116,9 +127,24 @@ def _merge_defaults(result: dict) -> dict:
             if conf_key not in result["_confidence"]:
                 result["_confidence"][conf_key] = 0.0
 
+    # _bbox 必须是 dict[str, list]
+    if not isinstance(result.get("_bbox"), dict):
+        result["_bbox"] = {}
+
+    # _items_bbox 必须是 list，每个元素必须是 list
+    raw_items_bbox = result.get("_items_bbox")
+    if not isinstance(raw_items_bbox, list):
+        result["_items_bbox"] = []
+    else:
+        result["_items_bbox"] = [b for b in raw_items_bbox if isinstance(b, list)]
+
     if not isinstance(result.get("items"), list):
         result["items"] = []
     else:
+        # 过滤掉非 dict 的 items 元素（LLM 偶尔返回数组而非对象）
+        result["items"] = [
+            item for item in result["items"] if isinstance(item, dict)
+        ]
         for item in result["items"]:
             item.setdefault("name", None)
             item.setdefault("part_number", None)
@@ -455,6 +481,8 @@ def _map_llm_to_ocr_result(
     ocr_items: list[OCRItem] = []
     item_names: list[str] = []
     for item in llm_items:
+        if not isinstance(item, dict):
+            continue
         name = item.get("name") or ""
         if not name:
             continue
@@ -618,12 +646,14 @@ class LLMOCR(BaseOCR):
 
         try:
             llm_result = json.loads(raw_content)
+            llm_result = _ensure_dict(llm_result)
         except json.JSONDecodeError as e:
             logger.warning(f"JSON 解析失败，尝试手动提取：{e}")
             start_idx = raw_content.find("{")
             end_idx = raw_content.rfind("}") + 1
             if start_idx >= 0 and end_idx > start_idx:
                 llm_result = json.loads(raw_content[start_idx:end_idx])
+                llm_result = _ensure_dict(llm_result)
             else:
                 return OCRResult(
                     raw_text="",
@@ -726,12 +756,14 @@ class LLMOCR(BaseOCR):
 
         try:
             llm_result = json.loads(raw_content)
+            llm_result = _ensure_dict(llm_result)
         except json.JSONDecodeError as e:
             logger.warning(f"JSON 解析失败：{e}")
             start_idx = raw_content.find("{")
             end_idx = raw_content.rfind("}") + 1
             if start_idx >= 0 and end_idx > start_idx:
                 llm_result = json.loads(raw_content[start_idx:end_idx])
+                llm_result = _ensure_dict(llm_result)
             else:
                 return (
                     OCRResult(raw_text="", fields={}, items=[], error=f"JSON 解析失败：{e}"),
@@ -751,4 +783,133 @@ class LLMOCR(BaseOCR):
         # 6. 构建 OCRResult（坐标归一化用 orig 尺寸，与前端显示的原图尺寸一致）
         # natural_width/height 用 processed_bytes 实际尺寸，与前端显示图片一致
         ocr_result = _map_llm_to_ocr_result(llm_result, processed_bytes, raw_content, proc_w, proc_h)
+        return ocr_result, detect_blocks, processed_bytes
+
+    async def recognize_continuation_with_detect(
+        self, image_bytes: bytes
+    ) -> tuple[OCRResult, list[dict], bytes]:
+        """
+        续页 OCR：用于 PDF 第2页+，只提取保养项目表格和金额。
+        与主流程复用相同的 SYSTEM_PROMPT 和容错策略，确保提取质量一致。
+        """
+        import openai
+        from PIL import Image
+        from io import BytesIO
+
+        t_start = time.time()
+
+        processed_bytes, orig_w, orig_h, proc_w, proc_h = _resize_if_needed(image_bytes)
+        b64_image = base64.b64encode(processed_bytes).decode("utf-8")
+        data_url = f"data:image/jpeg;base64,{b64_image}"
+
+        # PaddleDetector
+        from app.services.ocr.paddle_detector import get_detector
+        detector = get_detector()
+        detect_blocks = detector.detect(processed_bytes, known_size=(proc_w, proc_h))
+
+        # 复用 SYSTEM_PROMPT，确保模型有完整的抽取规则上下文
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": build_continuation_prompt()},
+                ],
+            },
+        ]
+
+        client = openai.OpenAI(api_key=self.api_key, base_url=self.api_url)
+        logger.info(f"续页 OCR 调用模型 [{self.model}]")
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=8192,
+            )
+        except Exception as api_err:
+            fallback_model = "qwen3.6-flash"
+            logger.warning(f"续页 模型 [{self.model}] 失败，降级到 [{fallback_model}]")
+            try:
+                response = client.chat.completions.create(
+                    model=fallback_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    max_tokens=8192,
+                )
+                self.model = fallback_model
+            except Exception as fallback_err:
+                logger.error(f"续页 Fallback 模型 [{fallback_model}] 也失败：{fallback_err}")
+                return (
+                    OCRResult(raw_text="", fields={}, items=[], error=f"续页 OCR 失败：{fallback_err}"),
+                    [],
+                    processed_bytes,
+                )
+
+        elapsed = time.time() - t_start
+        raw_content = response.choices[0].message.content
+        logger.info(f"续页 OCR 完成，耗时 {elapsed:.2f}s\n── 原始返回 ──\n{raw_content}")
+
+        # 空响应重试一次（与主流程一致）
+        if not raw_content or not raw_content.strip():
+            logger.warning(f"续页 LLM 返回内容为空，2 秒后重试...")
+            time.sleep(2)
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    max_tokens=8192,
+                )
+                raw_content = response.choices[0].message.content
+            except Exception as retry_err:
+                logger.error(f"续页重试失败：{retry_err}")
+                return (OCRResult(raw_text="", fields={}, items=[], error=f"续页 OCR 失败：{retry_err}"), [], processed_bytes)
+
+        if not raw_content or not raw_content.strip():
+            logger.error(f"续页 LLM 返回内容为空（已重试）")
+            return (OCRResult(raw_text="", fields={}, items=[], error="续页 LLM 返回为空"), [], processed_bytes)
+
+        # JSON 解析（含 markdown 包裹兜底，与主流程一致）
+        try:
+            llm_result = json.loads(raw_content)
+            llm_result = _ensure_dict(llm_result)
+        except json.JSONDecodeError as e:
+            logger.warning(f"续页 JSON 解析失败，尝试手动提取：{e}")
+            start_idx = raw_content.find("{")
+            end_idx = raw_content.rfind("}") + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                llm_result = json.loads(raw_content[start_idx:end_idx])
+                llm_result = _ensure_dict(llm_result)
+            else:
+                return (
+                    OCRResult(raw_text="", fields={}, items=[], error=f"续页 JSON 解析失败：{e}"),
+                    [],
+                    processed_bytes,
+                )
+
+        # 构造兼容 OCRResult 的结构
+        synthetic = _build_default_result()
+        raw_items = llm_result.get("items")
+        synthetic["items"] = [i for i in (raw_items if isinstance(raw_items, list) else []) if isinstance(i, dict)]
+        raw_items_bbox = llm_result.get("_items_bbox")
+        synthetic["_items_bbox"] = [b for b in (raw_items_bbox if isinstance(raw_items_bbox, list) else []) if isinstance(b, list)]
+        cost = llm_result.get("cost")
+        if isinstance(cost, dict):
+            synthetic["cost"] = cost
+            synthetic["_confidence"]["cost"] = 0.8
+        synthetic["_confidence"]["items"] = 0.8
+
+        synthetic = _merge_defaults(synthetic)
+
+        # 用 PaddleDetector 精化坐标
+        if detect_blocks:
+            synthetic = _refine_coords_with_detector(synthetic, detect_blocks)
+
+        ocr_result = _map_llm_to_ocr_result(synthetic, processed_bytes, raw_content, proc_w, proc_h)
         return ocr_result, detect_blocks, processed_bytes

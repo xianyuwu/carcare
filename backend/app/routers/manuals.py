@@ -5,7 +5,7 @@ import logging
 import tempfile
 from urllib.parse import urlparse
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from app.database import get_db, async_session
 from app.models import Manual, Vehicle, VehicleShare, User
 from app.schemas import ManualOut, ManualUpdate, ChunkPreviewResult, ChunkPreview
-from app.config import UPLOAD_DIR, MANUAL_PAGES_DIR
+from app.storage import get_storage
 from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/manuals", tags=["manuals"])
@@ -98,15 +98,15 @@ async def upload_manual(
     """上传手册（需要写入权限）"""
     await check_vehicle_write_access(db, vehicle_id, current_user.id)
 
-    dest = UPLOAD_DIR / f"manual_{vehicle_id}_{file.filename}"
     content = await file.read()
-    dest.write_bytes(content)
+    key = f"manuals/{vehicle_id}/{file.filename}"
+    get_storage().save(key, content, file.content_type or "application/pdf")
 
     manual = Manual(
         vehicle_id=vehicle_id,
         user_id=current_user.id,
         filename=file.filename,
-        file_path=str(dest),
+        file_path=key,
         status="pending",
         source_type="pdf",
         chunk_size=chunk_size,
@@ -137,14 +137,14 @@ async def add_web_knowledge(
     # 用页面标题作为显示名，无标题时用域名
     display_name = title or urlparse(req.url).netloc
     filename = display_name + ".txt"
-    dest = UPLOAD_DIR / f"manual_{req.vehicle_id}_web_{filename}"
-    dest.write_text(text, encoding="utf-8")
+    key = f"manuals/{req.vehicle_id}/web_{filename}"
+    get_storage().save_text(key, text)
 
     manual = Manual(
         vehicle_id=req.vehicle_id,
         user_id=current_user.id,
         filename=filename,
-        file_path=str(dest),
+        file_path=key,
         status="pending",
         source_type="web",
         source_url=req.url,
@@ -398,16 +398,13 @@ async def get_manual_file(
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=manual.source_url)
 
-    file_path = UPLOAD_DIR / f"manual_{manual.vehicle_id}_{manual.filename}"
-    if not file_path.exists():
+    key = manual.file_path or f"manuals/{manual.vehicle_id}/{manual.filename}"
+    storage = get_storage()
+    if not storage.exists(key):
         raise HTTPException(404, "文件不存在")
 
-    return FileResponse(
-        str(file_path),
-        media_type="application/pdf",
-        filename=manual.filename,
-        content_disposition_type="inline",
-    )
+    data = storage.read(key)
+    return Response(content=data, media_type="application/pdf")
 
 
 @router.get("/{manual_id}/page/{page_num}")
@@ -428,49 +425,80 @@ async def get_manual_page(
     if manual.vehicle_id not in accessible_vehicles:
         raise HTTPException(403, "无权访问该手册")
 
-    pdf_path = UPLOAD_DIR / f"manual_{manual.vehicle_id}_{manual.filename}"
-    if not pdf_path.exists():
+    key = manual.file_path or f"manuals/{manual.vehicle_id}/{manual.filename}"
+    storage = get_storage()
+    if not storage.exists(key):
         raise HTTPException(404, "PDF 文件不存在")
 
-    if highlight:
-        h = hashlib.md5(highlight.encode()).hexdigest()[:8]
-        cache_path = MANUAL_PAGES_DIR / f"{manual_id}_{page_num}_{h}.png"
+    # PyMuPDF 需要文件路径，本地直接用，S3 需先下载到临时文件
+    import tempfile
+    from app.storage import LocalStorage
+    if isinstance(storage, LocalStorage):
+        pdf_fs_path = storage.url(key)
     else:
-        cache_path = MANUAL_PAGES_DIR / f"{manual_id}_{page_num}.png"
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.write(storage.read(key) or b"")
+        tmp.close()
+        pdf_fs_path = tmp.name
 
-    if cache_path.exists():
-        return FileResponse(cache_path, media_type="image/png")
+    try:
+        if highlight:
+            h = hashlib.md5(highlight.encode()).hexdigest()[:8]
+            cache_key = f"manual_pages/{manual_id}_{page_num}_{h}.png"
+        else:
+            cache_key = f"manual_pages/{manual_id}_{page_num}.png"
 
-    import fitz
-    doc = fitz.open(str(pdf_path))
-    if page_num < 0 or page_num >= len(doc):
+        if storage.exists(cache_key):
+            data = storage.read(cache_key)
+            if data:
+                return Response(content=data, media_type="image/png")
+
+        import fitz
+        doc = fitz.open(pdf_fs_path)
+        if page_num < 0 or page_num >= len(doc):
+            doc.close()
+            raise HTTPException(400, f"页码超出范围（共 {len(doc)} 页）")
+
+        page = doc[page_num]
+        zoom = 2.0
+        mat = fitz.Matrix(zoom, zoom)
+
+        rects = []
+        if highlight:
+            rects = page.search_for(highlight)
+            if not rects and len(highlight) > 20:
+                rects = page.search_for(highlight[:50])
+            if not rects and len(highlight) > 10:
+                rects = page.search_for(highlight[:20])
+
+        pix = page.get_pixmap(matrix=mat)
+
+        if rects:
+            from PIL import Image, ImageDraw
+            import io
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            draw = ImageDraw.Draw(img, "RGBA")
+            for rect in rects:
+                x0, y0, x1, y1 = rect.x0 * zoom, rect.y0 * zoom, rect.x1 * zoom, rect.y1 * zoom
+                draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 0, 60), outline=(255, 200, 0, 160), width=2)
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="PNG")
+            storage.save(cache_key, buf.getvalue(), "image/png")
+        else:
+            import io
+            buf = io.BytesIO()
+            pix.save(buf, format="PNG")
+            storage.save(cache_key, buf.getvalue(), "image/png")
+
         doc.close()
-        raise HTTPException(400, f"页码超出范围（共 {len(doc)} 页）")
-
-    page = doc[page_num]
-    zoom = 2.0
-    mat = fitz.Matrix(zoom, zoom)
-
-    rects = []
-    if highlight:
-        rects = page.search_for(highlight)
-        if not rects and len(highlight) > 20:
-            rects = page.search_for(highlight[:50])
-        if not rects and len(highlight) > 10:
-            rects = page.search_for(highlight[:20])
-
-    pix = page.get_pixmap(matrix=mat)
-
-    if rects:
-        from PIL import Image, ImageDraw
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        draw = ImageDraw.Draw(img, "RGBA")
-        for rect in rects:
-            x0, y0, x1, y1 = rect.x0 * zoom, rect.y0 * zoom, rect.x1 * zoom, rect.y1 * zoom
-            draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 0, 60), outline=(255, 200, 0, 160), width=2)
-        img.convert("RGB").save(str(cache_path))
-    else:
-        pix.save(str(cache_path))
-
-    doc.close()
-    return FileResponse(cache_path, media_type="image/png")
+        data = storage.read(cache_key)
+        return Response(content=data, media_type="image/png")
+    finally:
+        # 清理 S3 临时文件
+        if not isinstance(storage, LocalStorage):
+            try:
+                if 'tmp' in locals():
+                    import os as _os
+                    _os.unlink(tmp.name)
+            except Exception:
+                pass

@@ -1,6 +1,7 @@
 """RAG 问答链 - SSE 流式输出"""
 import json
 import logging
+import time
 from typing import AsyncGenerator
 
 from app.config import CHROMA_DIR
@@ -8,13 +9,19 @@ from app.config import CHROMA_DIR
 logger = logging.getLogger(__name__)
 
 # 意图分类 prompt
-INTENT_PROMPT = """你是一个意图分类器。根据用户输入判断意图，只回复编号，不要回复任何其他内容：
-1. 闲聊打招呼（你好、在吗、谢谢、再见、你是谁）
-2. 保养咨询（该换什么、多久换、费用、机油规格、刹车片、轮胎、保养项目）
-3. 记录查询（最近保养、花了多少钱、保养历史、上次保养、记录查询）
-4. 其他
-
-用户输入："""
+def _classify_intent_keyword(question: str) -> str:
+    """关键词规则意图分类，零延迟"""
+    q = question.strip().lower()
+    # 闲聊关键词
+    greet_words = ["你好", "在吗", "谢谢", "再见", "你是谁", "hi", "hello", "hey", "thanks", "thank", "bye", "你是谁", "你能做什么", "你可以做什么"]
+    if any(w in q for w in greet_words) and len(q) < 20:
+        return "1"
+    # 记录查询关键词
+    record_words = ["最近保养", "花了多少钱", "保养历史", "上次保养", "记录", "花了多少", "什么时候做的", "做过哪些", "做了哪些", "换过什么", "换过哪些", "保养几次", "保养记录", "保养明细", "花了", "花费", "费用明细"]
+    if any(w in q for w in record_words):
+        return "3"
+    # 其余都是保养咨询
+    return "2"
 
 
 async def _get_llm_config() -> dict:
@@ -39,7 +46,7 @@ async def _get_llm_config() -> dict:
             "rag_rerank_api_key": get_secret("rag_rerank_api_key"),
             "rag_rerank_model": await _get_setting_value(db, "rag_rerank_model") or "",
             # 联网搜索
-            "search_api_url": await _get_setting_value(db, "search_api_url") or "https://api.tavily.com",
+            "search_api_url": await _get_setting_value(db, "search_api_url") or "https://qianfan.baidubce.com/v2/ai_search",
             "search_api_key": get_secret("search_api_key"),
         }
 
@@ -55,31 +62,34 @@ async def _record_search_usage(query: str):
 
 
 async def _web_search(question: str, config: dict) -> tuple[str, list[dict]]:
-    """调用 Tavily 搜索 API，返回 (搜索文本, 来源列表)，失败返回空"""
+    """调用百度千帆联网搜索 API，原生中文搜索"""
     import httpx
 
-    api_url = config.get("search_api_url", "https://api.tavily.com").rstrip("/")
     api_key = config.get("search_api_key", "")
     if not api_key:
         return "", []
 
+    api_url = config.get("search_api_url", "https://qianfan.baidubce.com/v2/ai_search").rstrip("/")
+
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                f"{api_url}/search",
-                headers={"Content-Type": "application/json"},
+                f"{api_url}/web_search",
+                headers={
+                    "X-Appbuilder-Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "api_key": api_key,
-                    "query": question,
-                    "max_results": 3,
-                    "include_answer": False,
+                    "messages": [{"role": "user", "content": question}],
+                    "search_source": "baidu_search_v2",
+                    "resource_type_filter": [{"type": "web", "top_k": 3}],
                 },
             )
             if resp.status_code != 200:
-                logger.warning("搜索 API 返回 %s", resp.status_code)
+                logger.warning("百度搜索 API 返回 %s: %s", resp.status_code, resp.text[:200])
                 return "", []
             data = resp.json()
-            results = data.get("results", [])
+            results = data.get("references", [])
             if not results:
                 return "", []
             parts = []
@@ -90,7 +100,6 @@ async def _web_search(question: str, config: dict) -> tuple[str, list[dict]]:
                 url = r.get("url", "")
                 parts.append(f"- {title}\n  {content}\n  来源：{url}")
                 sources.append({"title": title, "url": url, "content": content})
-            # 记录搜索用量
             await _record_search_usage(question)
             return "\n\n".join(parts), sources
     except Exception as e:
@@ -98,47 +107,10 @@ async def _web_search(question: str, config: dict) -> tuple[str, list[dict]]:
         return "", []
 
 
-async def _classify_intent(question: str, config: dict) -> str:
-    """意图分类，返回 '1'/'2'/'3'/'4'，失败默认返回 '2'（保养咨询）"""
-    import httpx
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"{config['api_url']}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api_key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["model"],
-                    "messages": [
-                        {"role": "system", "content": INTENT_PROMPT},
-                        {"role": "user", "content": question},
-                    ],
-                    "max_tokens": 10,
-                    "temperature": 0,
-                },
-            )
-            if resp.status_code != 200:
-                logger.warning("意图分类 API 返回 %s，降级为保养咨询", resp.status_code)
-                return "2"
-            result = resp.json()
-            answer = result["choices"][0]["message"]["content"].strip()
-            # 只取第一个数字字符
-            for ch in answer:
-                if ch in "1234":
-                    return ch
-            logger.warning("意图分类返回无法解析 '%s'，降级为保养咨询", answer)
-            return "2"
-    except Exception as e:
-        logger.warning("意图分类调用失败: %s，降级为保养咨询", e)
-        return "2"
-
-
 async def _get_vehicle_context(vehicle_id: int) -> str:
     from app.database import async_session
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
     from app.models import Vehicle, MaintenanceRecord
 
     async with async_session() as db:
@@ -149,19 +121,28 @@ async def _get_vehicle_context(vehicle_id: int) -> str:
         stmt = (
             select(MaintenanceRecord)
             .where(MaintenanceRecord.vehicle_id == vehicle_id)
+            .options(selectinload(MaintenanceRecord.items))
             .order_by(MaintenanceRecord.date.desc())
-            .limit(5)
         )
         result = await db.execute(stmt)
         records = result.scalars().all()
 
-    latest_mileage = records[0].mileage if records and records[0].mileage else vehicle.current_mileage
-    ctx = f"车辆：{vehicle.brand} {vehicle.model}，当前里程：{latest_mileage} km\n"
-    ctx += f"VIN: {vehicle.vin}\n"
+    latest_mileage = records[0].mileage if records and records[0].mileage else None
+    ctx = f"车辆：{vehicle.brand} {vehicle.model}，当前里程：{latest_mileage or '未知'} km\n"
     if records:
-        ctx += "\n最近保养记录：\n"
+        ctx += "\n全部保养记录（含项目明细）：\n"
         for r in records:
-            ctx += f"- {r.date}，{r.mileage} km，{r.type or '保养'}，¥{r.paid_amount}\n"
+            total = r.paid_amount or 0
+            items_str = ""
+            if r.items:
+                item_parts = []
+                for it in r.items:
+                    detail = it.name
+                    if it.parts_cost or it.labor_cost:
+                        detail += f"（配件{it.parts_cost}元+工费{it.labor_cost}元）"
+                    item_parts.append(detail)
+                items_str = f"：{'、'.join(item_parts)}"
+            ctx += f"- {r.date}，{r.mileage}km，{r.type or '保养'}，合计¥{total}{items_str}\n"
 
     return ctx
 
@@ -184,7 +165,7 @@ async def _get_vehicle_search_prefix(vehicle_id: int) -> str:
         )
         result = await db.execute(stmt)
         latest = result.scalar_one_or_none()
-        mileage = latest.mileage if latest and latest.mileage else vehicle.current_mileage
+        mileage = latest.mileage if latest and latest.mileage else None
 
     parts = [vehicle.brand, vehicle.model]
     if vehicle.year:
@@ -317,7 +298,11 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
     """SSE 流式问答，带意图路由"""
     import httpx
 
+    t_total = time.time()
+    timings: list[str] = []  # 收集各阶段耗时，SSE 流末返回给前端
+
     # 1. 获取配置
+    t0 = time.time()
     try:
         config = await _get_llm_config()
     except Exception as e:
@@ -325,10 +310,12 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
         yield f"data: {json.dumps({'content': f'LLM 配置读取失败：{e}'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
         return
+    timings.append(f"获取配置: {time.time() - t0:.2f}s")
 
-    # 2. 意图分类
-    intent = await _classify_intent(question, config)
-    logger.info("意图分类结果: %s (问题: %s)", intent, question[:20])
+    # 2. 意图分类（关键词规则，零延迟）
+    t0 = time.time()
+    intent = _classify_intent_keyword(question)
+    timings.append(f"意图分类[{intent}]: {time.time() - t0:.2f}s")
 
     # 3. 根据意图组装上下文和 system prompt
     # 所有意图共用的硬约束，放在 prompt 开头提高权重
@@ -347,9 +334,11 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
     search_sources: list[dict] = []
     should_search = search or False
     if should_search and intent != "1":
+        t0 = time.time()
         vehicle_prefix = await _get_vehicle_search_prefix(vehicle_id)
         search_query = f"{vehicle_prefix} {question}" if vehicle_prefix else question
         search_text, search_sources = await _web_search(search_query, config)
+        timings.append(f"联网搜索({len(search_sources)}条): {time.time() - t0:.2f}s")
 
     # 搜索结果编号函数：在 sources 加载后调用，生成带编号的搜索上下文
     def _build_search_ctx(offset: int) -> tuple[str, list[dict]]:
@@ -371,6 +360,7 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
         return ctx, numbered
 
     sources: list[dict] = []
+    rag_warning = ""
 
     if intent == "1":
         # 闲聊：精简 prompt，不加载数据
@@ -380,16 +370,26 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
             "告诉用户你能做什么：基于保养手册回答问题、查询保养记录、预估下次保养项目和费用。"
         )
     elif intent == "2":
-        # 保养咨询：完整 RAG pipeline + 引用标注
-        vehicle_ctx = await _get_vehicle_context(vehicle_id)
-        rag_warning = ""
-        try:
-            sources = await _retrieve_context(vehicle_id, question, config)
-            if not sources:
-                rag_warning = "知识库检索未找到相关内容，可能是手册未索引或 Embedding 服务异常，建议检查知识库状态和 Embedding 配置。"
-        except Exception as e:
-            logger.warning("Embedding 检索失败，降级为无手册上下文: %s", e)
-            rag_warning = f"知识库检索失败（{e}），建议检查 Embedding API 配置和账号状态。"
+        # 保养咨询：车辆上下文和 RAG 检索并行
+        import asyncio
+        t0 = time.time()
+        async def _load_vehicle_ctx():
+            return await _get_vehicle_context(vehicle_id)
+
+        async def _load_sources():
+            nonlocal rag_warning
+            try:
+                result = await _retrieve_context(vehicle_id, question, config)
+                if not result:
+                    rag_warning = "知识库检索未找到相关内容，可能是手册未索引或 Embedding 服务异常，建议检查知识库状态和 Embedding 配置。"
+                return result
+            except Exception as e:
+                logger.warning("Embedding 检索失败，降级为无手册上下文: %s", e)
+                rag_warning = f"知识库检索失败（{e}），建议检查 Embedding API 配置和账号状态。"
+                return []
+
+        vehicle_ctx, sources = await asyncio.gather(_load_vehicle_ctx(), _load_sources())
+        timings.append(f"车辆上下文+RAG检索({len(sources)}条)(并行): {time.time() - t0:.2f}s")
 
         # 给每个 chunk 编号，方便 LLM 引用
         manual_ctx = ""
@@ -425,7 +425,9 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
 - 引用表格数据时准确转述对应行和列的值，不要混淆不同列{search_ctx_for_prompt}"""
     elif intent == "3":
         # 记录查询：加载车辆和记录，不检索手册
+        t0 = time.time()
         vehicle_ctx = await _get_vehicle_context(vehicle_id)
+        timings.append(f"车辆上下文: {time.time() - t0:.2f}s")
         search_ctx_for_prompt, numbered_search = _build_search_ctx(0)
         search_sources = numbered_search
         system_prompt = f"""{BOUNDARY}{today_str}
@@ -442,7 +444,9 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
 - 引用搜索内容时，在对应语句末尾标注来源编号，格式如 [1] 或 [1][2]{search_ctx_for_prompt}"""
     else:
         # 其他：加载车辆上下文，不检索手册
+        t0 = time.time()
         vehicle_ctx = await _get_vehicle_context(vehicle_id)
+        timings.append(f"车辆上下文: {time.time() - t0:.2f}s")
         search_ctx_for_prompt, numbered_search = _build_search_ctx(0)
         search_sources = numbered_search
         system_prompt = f"""{BOUNDARY}{today_str}
@@ -458,6 +462,8 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
 - 引用搜索内容时，在对应语句末尾标注来源编号，格式如 [1] 或 [1][2]{search_ctx_for_prompt}"""
 
     # 4. 流式调用 LLM（带历史消息，限制最近 10 条控制 token 用量）
+    timings.append(f"准备总耗时: {time.time() - t_total:.2f}s")
+    logger.info("⏱ %s", " | ".join(timings))
     MAX_HISTORY = 25
     recent_history = history[-MAX_HISTORY:] if history else []
     messages = [
@@ -475,7 +481,6 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
     if intent == "1":
         llm_params["max_tokens"] = 200
 
-    completed = False
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             async with client.stream(
@@ -498,7 +503,6 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
                     if line.startswith("data: "):
                         data = line[6:]
                         if data.strip() == "[DONE]":
-                            completed = True
                             break
                         try:
                             chunk = json.loads(data)
@@ -513,24 +517,25 @@ async def chat_stream(vehicle_id: int, question: str, history: list[dict] = [], 
         yield "data: [DONE]\n\n"
         return
 
-    # 流式内容结束后，发送 warning、引用来源元数据
-    if completed:
-        if rag_warning:
-            yield f"data: {json.dumps({'type': 'warning', 'data': rag_warning}, ensure_ascii=False)}\n\n"
-        if intent == "2" and sources:
-            sources_payload = [
-                {
-                    "id": i + 1,
-                    "text": s["text"],
-                    "manual_id": s["manual_id"],
-                    "page": s["page"],
-                    "filename": s["filename"],
-                    "source_type": s.get("source_type", "pdf"),
-                    "source_url": s.get("source_url", ""),
-                }
-                for i, s in enumerate(sources)
-            ]
-            yield f"data: {json.dumps({'type': 'sources', 'data': sources_payload}, ensure_ascii=False)}\n\n"
-        if search_sources:
-            yield f"data: {json.dumps({'type': 'search_sources', 'data': search_sources}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
+    # 流式内容结束后，发送 warning、引用来源元数据、耗时诊断
+    if timings:
+        yield f"data: {json.dumps({'type': 'timings', 'data': timings}, ensure_ascii=False)}\n\n"
+    if rag_warning:
+        yield f"data: {json.dumps({'type': 'warning', 'data': rag_warning}, ensure_ascii=False)}\n\n"
+    if intent == "2" and sources:
+        sources_payload = [
+            {
+                "id": i + 1,
+                "text": s["text"],
+                "manual_id": s["manual_id"],
+                "page": s["page"],
+                "filename": s["filename"],
+                "source_type": s.get("source_type", "pdf"),
+                "source_url": s.get("source_url", ""),
+            }
+            for i, s in enumerate(sources)
+        ]
+        yield f"data: {json.dumps({'type': 'sources', 'data': sources_payload}, ensure_ascii=False)}\n\n"
+    if search_sources:
+        yield f"data: {json.dumps({'type': 'search_sources', 'data': search_sources}, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"

@@ -252,6 +252,7 @@ function ImageAnnotation({
   items,
   items_bbox,
   showAll,
+  itemGlobalIndices,
 }: {
   imageBase64: string
   fieldCoords: OCRResult['field_coords']
@@ -263,6 +264,7 @@ function ImageAnnotation({
   items?: OCRResult['items']
   items_bbox?: number[][]
   showAll?: boolean
+  itemGlobalIndices?: number[]  // 每个本地 item 对应的全局索引
 }) {
   const [localNatural, setLocalNatural] = useState({ w: 0, h: 0 })
   const effectiveSize = naturalSize.w > 0 ? naturalSize : localNatural
@@ -331,7 +333,7 @@ function ImageAnnotation({
     const lblY = Math.max(0, poly[0].Y - labelH - 1)
 
     return (
-      <g key={reactKey} style={{ cursor: 'pointer' }}
+      <g key={reactKey} data-field={fieldKey} style={{ cursor: 'pointer' }}
         onClick={() => onFieldClick(fieldKey)}
         onMouseEnter={() => setHoveredField(fieldKey)}
         onMouseLeave={() => setHoveredField(null)}
@@ -408,13 +410,14 @@ function ImageAnnotation({
 
           {/* 保养项目高亮区域 */}
           {(items || []).map((item, idx) => {
-            const itemKey = `item_${idx}`
+            const globalIdx = itemGlobalIndices?.[idx] ?? idx
+            const itemKey = `item_${globalIdx}`
             const itemBbox = items_bbox?.[idx]
             if (!itemBbox || itemBbox.length !== 4) return null
             if (!shouldShow(itemKey)) return null
             const poly = normToPoly(itemBbox, effectiveSize.w, effectiveSize.h)
             const isHovered = highlightedField === itemKey || hoveredField === itemKey
-            const lbl = item.name || `项目${idx + 1}`
+            const lbl = item.name || `项目${globalIdx + 1}`
             const colors = isHovered
               ? { fill: 'rgba(59,130,246,0.32)', stroke: '#2563EB' }
               : { fill: 'rgba(16,185,129,0.18)', stroke: '#10B981' }
@@ -717,13 +720,22 @@ function ConfirmStep({
     },
   })
 
-  // 字段 ref + 滚动定位
+  // 字段 ref + 滚动定位（右侧 → 右侧）
   const fieldInputRefs = useRef<Record<string, HTMLDivElement | null>>({})
   useEffect(() => {
     if (highlightedField && fieldInputRefs.current[highlightedField]) {
       fieldInputRefs.current[highlightedField]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   }, [highlightedField])
+
+  // 左侧图片标注跟随：鼠标悬停右侧字段时，自动滚动左侧图片容器
+  useEffect(() => {
+    if (!highlightedField || !imageContainerRef.current) return
+    const el = imageContainerRef.current.querySelector(`[data-field="${highlightedField}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [highlightedField, imageContainerRef])
 
   // 点击/聚焦右侧字段 → 高亮左侧对应区域
   const clickField = (f: string) => {
@@ -763,7 +775,50 @@ function ConfirmStep({
             </div>
           </div>
           <div ref={imageContainerRef} className="flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
-            {ocrResult.image_base64 ? (
+            {/* 多页 PDF：上下堆叠渲染每页标注 */}
+            {ocrResult.pages && ocrResult.pages.length > 1 ? (
+              <div className="flex flex-col items-center gap-4">
+                {ocrResult.pages.map((page, pageIdx) => {
+                  const pageNum = pageIdx + 1
+                  // 该页的字段坐标：直接用该页检测到的全部坐标，不过滤
+                  const pageFieldCoords = page.field_coords
+                  // 该页的 items 和 bbox + 全局索引
+                  const pageItems: typeof ocrResult.items = []
+                  const pageItemsBbox: number[][] = []
+                  const globalIndices: number[] = []
+                  let localIdx = 0
+                  ;(ocrResult.items_page || []).forEach((p, i) => {
+                    if (p === pageNum) {
+                      pageItems.push(ocrResult.items[i])
+                      globalIndices.push(i)
+                      const bbox = page.items_bbox?.[localIdx]
+                      pageItemsBbox.push(bbox && bbox.length === 4 ? bbox : [])
+                      localIdx++
+                    }
+                  })
+                  const pageNaturalSize = { w: page.natural_width, h: page.natural_height }
+                  return (
+                    <div key={pageIdx}>
+                      <div className="text-xs text-slate-400 mb-1 text-center">第 {pageNum} 页</div>
+                      <ImageAnnotation
+                        imageBase64={page.image_base64}
+                        fieldCoords={pageFieldCoords}
+                        highlightedField={highlightedField}
+                        onFieldClick={onFieldClick}
+                        scale={imgScale}
+                        naturalSize={pageNaturalSize.w > 0 ? pageNaturalSize : naturalSize}
+                        fieldConfMeta={meta}
+                        items={pageItems}
+                        items_bbox={pageItemsBbox}
+                        showAll={showAllHighlights}
+                        itemGlobalIndices={globalIndices}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : ocrResult.image_base64 ? (
+              /* 单页（图片或单页 PDF）：原逻辑 */
               <ImageAnnotation
                 imageBase64={ocrResult.image_base64}
                 fieldCoords={ocrResult.field_coords}

@@ -148,6 +148,20 @@ class OCRResult(BaseModel):
     raw_json: str = ""                  # LLM 返回的原始 JSON 字符串
     natural_width: int = 0              # image_base64 对应图片的真实像素宽度
     natural_height: int = 0             # image_base64 对应图片的真实像素高度
+    # 多页 PDF 支持
+    pages: list["OCRPageData"] = []     # 每页的图片和坐标数据
+    field_page: dict[str, int] = {}     # 字段 → 页码（1-based）
+    items_page: list[int] = []          # 每个 item 的页码（1-based）
+
+
+class OCRPageData(BaseModel):
+    """单页 PDF 的图片数据，用于前端标注渲染"""
+    image_base64: str = ""
+    natural_width: int = 0
+    natural_height: int = 0
+    field_coords: dict[str, list[dict[str, float]]] = {}
+    items_bbox: list[list[float]] = []
+    bbox: dict[str, list[float]] = {}
 
 
 # --- Manual ---

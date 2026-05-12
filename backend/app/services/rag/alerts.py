@@ -11,28 +11,57 @@ async def _get_llm_config() -> dict:
     return await _chain_config()
 
 
-async def _get_history(vehicle_id: int) -> list[dict]:
-    """获取车辆各保养项目的最后执行记录"""
+async def _get_item_mileage_history(vehicle_id: int) -> list[dict]:
+    """各保养项目的完整执行里程序列，LLM 据此推断间隔规律"""
     from app.database import async_session
-    from sqlalchemy import select, func
+    from sqlalchemy import select
     from app.models import MaintenanceRecord, MaintenanceItem
 
     async with async_session() as db:
         stmt = (
-            select(
-                MaintenanceItem.name,
-                func.max(MaintenanceRecord.mileage).label("last_mileage"),
-                func.max(MaintenanceRecord.date).label("last_date"),
-            )
+            select(MaintenanceItem.name, MaintenanceRecord.mileage)
             .join(MaintenanceRecord, MaintenanceItem.record_id == MaintenanceRecord.id)
-            .where(MaintenanceRecord.vehicle_id == vehicle_id)
-            .group_by(MaintenanceItem.name)
+            .where(MaintenanceRecord.vehicle_id == vehicle_id, MaintenanceRecord.mileage != None)
+            .order_by(MaintenanceRecord.mileage.asc())
         )
         result = await db.execute(stmt)
-        return [
-            {"name": row.name, "last_mileage": row.last_mileage, "last_date": row.last_date}
-            for row in result
-        ]
+        rows = result.all()
+
+    # 按项目名聚合所有执行里程
+    mileage_map: dict[str, list[int]] = {}
+    for name, mileage in rows:
+        mileage_map.setdefault(name, []).append(mileage)
+
+    return [
+        {"name": name, "mileages": mileages}
+        for name, mileages in mileage_map.items()
+    ]
+
+
+async def _get_visit_bundles(vehicle_id: int) -> list[dict]:
+    """按单次保养聚合项目清单，LLM 据此推断哪些项目总是一起做"""
+    from app.database import async_session
+    from sqlalchemy import select
+    from app.models import MaintenanceRecord, MaintenanceItem
+
+    async with async_session() as db:
+        stmt = (
+            select(MaintenanceRecord.id, MaintenanceRecord.date, MaintenanceRecord.mileage, MaintenanceItem.name)
+            .join(MaintenanceItem, MaintenanceItem.record_id == MaintenanceRecord.id)
+            .where(MaintenanceRecord.vehicle_id == vehicle_id)
+            .order_by(MaintenanceRecord.date.desc())
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+    # 按记录 ID 分组
+    visit_map: dict[int, dict] = {}
+    for rec_id, date, mileage, item_name in rows:
+        if rec_id not in visit_map:
+            visit_map[rec_id] = {"date": date, "mileage": mileage, "items": []}
+        visit_map[rec_id]["items"].append(item_name)
+
+    return list(visit_map.values())
 
 
 async def _get_item_costs(vehicle_id: int) -> list[dict]:
@@ -106,10 +135,10 @@ async def _retrieve_manual_context(vehicle_id: int, question: str, config: dict)
 
 
 async def _get_latest_mileage(vehicle_id: int) -> int | None:
-    """从最近保养记录获取当前里程，fallback 到车辆表的 current_mileage"""
+    """从最近保养记录获取当前里程"""
     from app.database import async_session
     from sqlalchemy import select
-    from app.models import Vehicle, MaintenanceRecord
+    from app.models import MaintenanceRecord
 
     async with async_session() as db:
         stmt = (
@@ -120,10 +149,7 @@ async def _get_latest_mileage(vehicle_id: int) -> int | None:
         )
         result = await db.execute(stmt)
         row = result.scalar_one_or_none()
-        if row:
-            return row
-        vehicle = await db.get(Vehicle, vehicle_id)
-        return vehicle.current_mileage if vehicle else None
+        return row if row else None
 
 
 async def predict_items(vehicle_id: int) -> dict:
@@ -133,26 +159,47 @@ async def predict_items(vehicle_id: int) -> dict:
         if not config.get("api_key") or not config.get("api_url"):
             return {"predicted_items": [], "reasoning": "未配置 LLM"}
 
-        history = await _get_history(vehicle_id)
-        if not history:
+        item_hist = await _get_item_mileage_history(vehicle_id)
+        visits = await _get_visit_bundles(vehicle_id)
+        if not item_hist:
             return {"predicted_items": [], "reasoning": "暂无保养记录"}
 
         current_mileage = await _get_latest_mileage(vehicle_id)
 
-        history_text = "\n".join(
-            f"- {h['name']}：上次 {h['last_mileage']}km，{h['last_date']}" for h in history
-        )
+        # 各项目完整里程序列（含间隔推断）
+        item_lines = []
+        for h in item_hist:
+            mileages = h["mileages"]
+            if len(mileages) >= 2:
+                gaps = [mileages[i] - mileages[i-1] for i in range(1, len(mileages))]
+                avg_gap = sum(gaps) / len(gaps)
+                gaps_str = "、".join(f"约{int(g)}km" for g in gaps)
+                item_lines.append(
+                    f"- {h['name']}：已做 {len(mileages)} 次，{', '.join(str(m) for m in mileages)}km，间隔 {gaps_str}，平均 {int(avg_gap)}km"
+                )
+            else:
+                item_lines.append(f"- {h['name']}：仅在 {mileages[0]}km 做过 1 次，尚无间隔规律")
 
-        manual_ctx = await _retrieve_manual_context(vehicle_id, "保养周期 下次保养项目", config)
+        # 每次保养项目清单
+        visit_lines = []
+        for v in visits:
+            visit_lines.append(f"- {v['date']}, {v['mileage']}km: {'、'.join(v['items'])}")
+
+        manual_ctx = await _retrieve_manual_context(vehicle_id, "保养周期 保养项目 更换间隔", config)
 
         question = (
-            f"车辆保养历史：\n{history_text}\n\n"
-            f"车辆当前里程：{current_mileage} km\n\n"
-            f"保养手册参考：\n{manual_ctx}\n\n"
-            "请根据保养手册的周期要求和车辆保养历史，预测下一次保养需要做的项目。"
+            f"【各项目完整里程序列及间隔规律】\n{chr(10).join(item_lines)}\n\n"
+            f"【历次保养项目清单】\n{chr(10).join(visit_lines)}\n\n"
+            f"【当前里程】{current_mileage} km\n\n"
+            f"【保养手册参考】\n{manual_ctx}\n\n"
+            "请综合以上信息预测下一次保养需要做的项目：\n"
+            "1. 参考历次保养组合，判断哪些项目通常一起做\n"
+            "2. 分析每个项目的历史间隔，判断哪些项目在本次里程已到或临近周期\n"
+            "3. 比对保养手册的厂家建议周期，补充遗漏的项目\n"
+            "4. 特别关注那些间隔较长（数万公里）的项目，判断是否到期\n"
             "以 JSON 格式返回："
             '{"predicted_items": ["项目1", "项目2"], "reasoning_points": [{"title": "要点标题", "detail": "具体说明"}]}'
-            "reasoning_points 每个要点要有简短标题和具体说明，分3-5个要点。只返回 JSON。"
+            "reasoning_points 每个要点要有简短标题和具体说明，分4-6个要点。只返回 JSON。"
         )
 
         text = _clean_json_response(await _call_llm(config, "你是专业汽车保养顾问。严格返回 JSON。", question))

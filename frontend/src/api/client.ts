@@ -305,6 +305,15 @@ export interface OCRBlock {
   polygon: { X: number; Y: number }[]
 }
 
+export interface OCRPageData {
+  image_base64: string
+  natural_width: number
+  natural_height: number
+  field_coords: Record<string, { X: number; Y: number }[]>
+  items_bbox: number[][]
+  bbox?: Record<string, number[]>
+}
+
 export interface OCRResult {
   raw_text: string
   fields: Record<string, string>
@@ -320,6 +329,10 @@ export interface OCRResult {
   raw_json?: string
   natural_width?: number
   natural_height?: number
+  // 多页 PDF 支持
+  pages?: OCRPageData[]
+  field_page?: Record<string, number>   // 字段 → 页码（1-based）
+  items_page?: number[]                 // 每个 item 的页码（1-based）
 }
 
 export const uploadAndOCR = async (file: File): Promise<OCRResult> => {
@@ -599,6 +612,7 @@ export type ChatStreamEvent =
   | { type: 'sources'; data: Source[] }
   | { type: 'search_sources'; data: SearchSource[] }
   | { type: 'warning'; data: string }
+  | { type: 'timings'; data: string[] }
 
 export async function* chatStream(vehicleId: number, question: string, history: { role: string; content: string }[] = [], signal?: AbortSignal, search?: boolean): AsyncGenerator<ChatStreamEvent> {
   const token = getToken()
@@ -638,6 +652,8 @@ export async function* chatStream(vehicleId: number, question: string, history: 
             yield { type: 'search_sources', data: parsed.data }
           } else if (parsed.type === 'warning') {
             yield { type: 'warning', data: parsed.data }
+          } else if (parsed.type === 'timings') {
+            console.log('⏱ AI 问答耗时:', (parsed.data as string[]).join(' | '))
           } else if (parsed.content) {
             yield { type: 'content', text: parsed.content }
           }

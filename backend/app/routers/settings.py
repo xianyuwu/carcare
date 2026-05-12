@@ -264,7 +264,7 @@ async def test_search(
     db: AsyncSession = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ):
-    """测试联网搜索 API 连通性"""
+    """测试百度千帆联网搜索 API 连通性"""
     import httpx
 
     api_url = await _get_setting_value(db, "search_api_url")
@@ -277,86 +277,47 @@ async def test_search(
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                f"{api_url.rstrip('/')}/search",
-                headers={"Content-Type": "application/json"},
+                f"{api_url.rstrip('/')}/web_search",
+                headers={
+                    "X-Appbuilder-Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "api_key": api_key,
-                    "query": "汽车保养机油更换周期",
-                    "max_results": 1,
-                    "include_answer": False,
+                    "messages": [{"role": "user", "content": "汽车保养机油更换周期"}],
+                    "resource_type_filter": [{"type": "web", "top_k": 3}],
                 },
             )
             elapsed = round(time.time() - start, 2)
             if resp.status_code == 200:
                 data = resp.json()
-                results = data.get("results", [])
+                results = data.get("references", [])
                 return {"ok": True, "query": "汽车保养机油更换周期", "results": len(results), "elapsed": elapsed}
             else:
                 return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:300]}", "elapsed": elapsed}
     except Exception as e:
         return {"ok": False, "error": str(e), "elapsed": round(time.time() - start, 2)}
-
-# Tavily 用量缓存（5 分钟 TTL，避免触发限流）
-_tavily_cache: dict = {"data": None, "expires": 0}
-
-
 @router.get("/search-usage")
 async def get_search_usage(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """查询搜索用量：本地当月统计 + Tavily API 实时额度"""
+    """查询搜索用量：本地当日统计"""
     from app.models.models import SearchUsage
-    from datetime import datetime
-    import httpx
-    import time as _time
+    from datetime import datetime, date
 
-    now = datetime.now()
-    month_start = datetime(now.year, now.month, 1)
+    today = date.today()
+    today_start = datetime(today.year, today.month, today.day)
 
     result = await db.execute(
-        select(func.count(SearchUsage.id)).where(SearchUsage.created_at >= month_start)
+        select(func.count(SearchUsage.id)).where(SearchUsage.created_at >= today_start)
     )
-    local_count = result.scalar() or 0
+    today_count = result.scalar() or 0
 
-    limit = int(await _get_setting_value(db, "search_monthly_limit") or "1000")
-
-    # Tavily API：缓存 5 分钟，避免 10 次/10 分钟限流
-    tavily_info = None
-    if _tavily_cache["data"] and _time.time() < _tavily_cache["expires"]:
-        tavily_info = _tavily_cache["data"]
-    else:
-        api_url = await _get_setting_value(db, "search_api_url")
-        api_key = get_secret("search_api_key")
-        if api_url and api_key:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(
-                        f"{api_url.rstrip('/')}/usage",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
-                    if resp.status_code == 200:
-                        tavily_info = resp.json()
-                        _tavily_cache["data"] = tavily_info
-                        _tavily_cache["expires"] = _time.time() + 300  # 5 分钟
-            except Exception:
-                # 失败时用缓存（即使过期也比没有好）
-                if _tavily_cache["data"]:
-                    tavily_info = _tavily_cache["data"]
-
-    # 优先用 Tavily 的实际用量，本地仅作备用
-    used = local_count
-    real_limit = limit
-    if tavily_info and tavily_info.get("account"):
-        acc = tavily_info["account"]
-        used = acc.get("plan_usage", local_count)
-        real_limit = acc.get("plan_limit", limit)
+    limit = int(await _get_setting_value(db, "search_daily_limit") or "50")
 
     return {
-        "month": f"{now.year}-{now.month:02d}",
-        "local_used": local_count,
-        "used": used,
-        "monthly_limit": real_limit,
-        "remaining": max(0, real_limit - used),
-        "tavily": tavily_info,
+        "date": today.isoformat(),
+        "used": today_count,
+        "limit": limit,
+        "remaining": max(0, limit - today_count),
     }

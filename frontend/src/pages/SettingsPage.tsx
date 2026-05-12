@@ -51,12 +51,12 @@ const settingGroups: { title: string; desc: string; testKey: 'ocr' | 'llm' | 'em
   },
   {
     title: '联网搜索配置',
-    desc: '配置 AI 助手联网搜索能力（使用 Tavily API）',
+    desc: '配置 AI 助手联网搜索能力（使用百度千帆联网搜索）',
     testKey: 'search' as const,
     fields: [
-      { key: 'search_api_key', label: '搜索 API Key', secret: true, placeholder: 'Tavily API Key' },
-      { key: 'search_api_url', label: '搜索 API 地址', placeholder: 'https://api.tavily.com' },
-      { key: 'search_monthly_limit', label: '每月额度', type: 'number', placeholder: '1000', helpText: '每月免费搜索次数上限' },
+      { key: 'search_api_key', label: '搜索 API Key', secret: true, placeholder: '千帆 AppBuilder API Key' },
+      { key: 'search_api_url', label: '搜索 API 地址', placeholder: 'https://qianfan.baidubce.com/v2/ai_search' },
+      { key: 'search_daily_limit', label: '每日额度', type: 'number', placeholder: '50', helpText: '百度千帆免费50次/天' },
     ],
   },
 ]
@@ -111,18 +111,18 @@ function SearchUsageCard() {
 
   if (!data) return null
 
-  const percent = data.monthly_limit > 0 ? Math.round((data.used / data.monthly_limit) * 100) : 0
+  const percent = data.limit > 0 ? Math.round((data.used / data.limit) * 100) : 0
   const isWarning = percent >= 80
   const isDanger = percent >= 95
 
   return (
     <div className="mt-4 pt-4 border-t border-slate-100">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-medium text-slate-600">{data.month} 月用量</span>
+        <span className="text-xs font-medium text-slate-600">{data.date} 今日用量</span>
         <button onClick={() => refetch()} className="text-[10px] text-slate-400 hover:text-blue-500 transition-colors">刷新</button>
       </div>
       <div className="flex items-center justify-between text-xs text-slate-500 mb-1.5">
-        <span>已使用 <span className={`font-medium ${isDanger ? 'text-red-500' : isWarning ? 'text-amber-500' : 'text-slate-700'}`}>{data.used}</span> / {data.monthly_limit} 次</span>
+        <span>已使用 <span className={`font-medium ${isDanger ? 'text-red-500' : isWarning ? 'text-amber-500' : 'text-slate-700'}`}>{data.used}</span> / {data.limit} 次</span>
         <span>剩余 <span className={`font-medium ${isDanger ? 'text-red-500' : isWarning ? 'text-amber-500' : 'text-emerald-600'}`}>{data.remaining}</span></span>
       </div>
       <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -131,11 +131,6 @@ function SearchUsageCard() {
           style={{ width: `${Math.min(percent, 100)}%` }}
         />
       </div>
-      {data.tavily?.account && (
-        <div className="mt-2 text-[10px] text-slate-400">
-          Tavily（{data.tavily.account.current_plan}）：已用 {data.tavily.account.plan_usage} / {data.tavily.account.plan_limit} 次
-        </div>
-      )}
     </div>
   )
 }
