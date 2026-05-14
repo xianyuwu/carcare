@@ -39,15 +39,15 @@
 
 ### RAG 知识库检索流程
 
-![ai-chatbot-flowchart](/Users/rainwu/软件开发/车辆维护保养分析系统/docs/screenshots/ai-chatbot-flowchart.png)
+![ai-chatbot-flowchart](docs/screenshots/ai-chatbot-flowchart.png)
 
 ### AI 问答流程（chat_stream）
 
-![chat_stream](/Users/rainwu/软件开发/车辆维护保养分析系统/docs/screenshots/chat_stream.png)
+![chat_stream](docs/screenshots/chat_stream.png)
 
 ### AI 保养预测流程
 
-![ai-prediction-flow](/Users/rainwu/软件开发/车辆维护保养分析系统/docs/screenshots/ai-prediction-flow.png)
+![ai-prediction-flow](docs/screenshots/ai-prediction-flow.png)
 
 ## 技术栈
 
