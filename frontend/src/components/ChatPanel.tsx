@@ -25,12 +25,20 @@ const MESSAGE_WARNING_THRESHOLD = 50
 
 // --- 引用标注组件（纯展示，modal 由 ChatPanel 渲染） ---
 function CitationBadge({ source }: { source: CitationItem }) {
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (ref.current) {
+      console.log('[CitationBadge] mounted source id:', source.id, 'element:', ref.current)
+    }
+  }, [source.id])
   return (
     <sup
+      ref={ref}
       className="cursor-pointer inline-flex items-center justify-center rounded-full bg-indigo-300 text-indigo-700 hover:bg-indigo-400 transition-colors ml-0.5 px-[5px] py-[1px] text-[11px] leading-none font-normal select-none"
       onClick={(e) => {
         e.preventDefault()
         e.stopPropagation()
+        console.log('[CitationBadge] clicked source id:', source.id)
         emitCitationOpen(source)
       }}
       title={`查看引用来源 ${source.id}`}

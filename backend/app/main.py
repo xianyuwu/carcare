@@ -5,10 +5,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+# 必须在导入 database 之前加载 .env，因为数据库引擎在模块级根据 DATABASE_URL 初始化
+from dotenv import load_dotenv
+from app.config import ENV_FILE
+load_dotenv(ENV_FILE)
+
 from app.database import init_db
 from app.routers import vehicles, records, upload, chat, manuals, settings, templates, dashboard, auth, admin_users
 
-PHOTO_DIR = Path(__file__).resolve().parent.parent / "data" / "vehicle_photos"
+PHOTO_DIR = Path(os.getenv("STORAGE_DIR", str(Path(__file__).resolve().parent.parent / "data" / "files"))) / "vehicles"
 
 
 @asynccontextmanager

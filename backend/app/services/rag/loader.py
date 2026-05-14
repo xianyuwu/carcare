@@ -139,12 +139,31 @@ async def index_manual(
             pages = [text] if text else []
             manual.page_count = 1 if text else 0
         else:
-            doc = fitz.open(manual.file_path)
-            pages = []
-            for page in doc:
-                pages.append(extract_page_text(page))
-            doc.close()
-            manual.page_count = len(pages)
+            from app.storage import get_storage, LocalStorage
+            storage = get_storage()
+            key = manual.file_path or f"manuals/{manual.vehicle_id}/{manual.filename}"
+            if isinstance(storage, LocalStorage):
+                pdf_path = storage.url(key)
+            else:
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                tmp.write(storage.read(key) or b"")
+                tmp.close()
+                pdf_path = tmp.name
+            try:
+                doc = fitz.open(pdf_path)
+                pages = []
+                for page in doc:
+                    pages.append(extract_page_text(page))
+                doc.close()
+                manual.page_count = len(pages)
+            finally:
+                if not isinstance(storage, LocalStorage):
+                    import os as _os
+                    try:
+                        _os.unlink(pdf_path)
+                    except Exception:
+                        pass
 
         await _progress("extracting", f"文本提取完成，共 {manual.page_count} 页")
 

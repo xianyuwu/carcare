@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/vehicles", tags=["vehicles"])
 
 def _with_photo_url(vehicle: Vehicle) -> dict:
     data = {c.name: getattr(vehicle, c.name) for c in vehicle.__table__.columns}
-    data["photo_url"] = f"/api/vehicle-photos/{vehicle.photo_path}" if vehicle.photo_path else None
+    data["photo_url"] = f"/api/vehicle-photos/{vehicle.id}/{vehicle.photo_path}" if vehicle.photo_path else None
     return data
 
 

@@ -104,29 +104,36 @@ class PaddleDetector:
             w, h = img.size
 
         t0 = time.time()
-        # 新版 PaddleOCR 3.x API：需要传 numpy array 或文件路径，不接受原始 bytes
         import numpy as np
         import cv2
         np_img = np.frombuffer(image_bytes, dtype=np.uint8)
         np_img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-        raw = self.engine.ocr(np_img)
-        elapsed = time.time() - t0
 
+        # PaddleOCR 3.x 用 predict() 返回生成器，2.x 用 ocr() 返回列表
+        if hasattr(self.engine, 'predict'):
+            raw = list(self.engine.predict(np_img))
+        else:
+            raw = self.engine.ocr(np_img)
+
+        elapsed = time.time() - t0
         blocks = []
-        if raw is None or (isinstance(raw, (list, tuple)) and len(raw) == 0):
+
+        if not raw:
             logger.info(f"PaddleOCR 检测完成，耗时 {elapsed:.2f}s，未检测到文字区域")
             return blocks
 
-        # 取第一页（与 LLM OCR 一致）
         page_data = raw[0] if isinstance(raw, list) else raw
-        dt_polys = page_data.get("dt_polys") or []
-        rec_texts = page_data.get("rec_texts") or []
-        rec_scores = page_data.get("rec_scores") or []
 
-        logger.info(f"PaddleOCR 检测完成，耗时 {elapsed:.2f}s，检测到 {len(dt_polys)} 个文字区域")
+        if isinstance(page_data, dict):
+            polys = page_data.get("dt_polys") or page_data.get("rec_boxes") or []
+            texts = page_data.get("rec_texts") or []
+            scores = page_data.get("rec_scores") or []
+        else:
+            polys, texts, scores = [], [], []
 
-        for i, poly_pts in enumerate(dt_polys):
-            # dt_polys 可能是 numpy array，强制转 list
+        logger.info(f"PaddleOCR 检测完成，耗时 {elapsed:.2f}s，检测到 {len(polys)} 个文字区域")
+
+        for i, poly_pts in enumerate(polys):
             try:
                 pts = poly_pts.tolist() if hasattr(poly_pts, 'tolist') else list(poly_pts)
             except Exception:
@@ -139,11 +146,9 @@ class PaddleDetector:
             x1, y1 = min(xs), min(ys)
             x2, y2 = max(xs), max(ys)
 
-            # 归一化
             norm_bbox = [x1 / w, y1 / h, x2 / w, y2 / h]
             norm_center = [(x1 + x2) / 2 / w, (y1 + y2) / 2 / h]
 
-            # rec_texts / rec_scores 可能是 numpy array
             def safe_get(arr, idx, default=""):
                 try:
                     v = arr[idx]
@@ -151,12 +156,12 @@ class PaddleDetector:
                 except Exception:
                     return default
 
-            text = safe_get(rec_texts, i, "")
-            conf = safe_get(rec_scores, i, 1.0)
+            text = safe_get(texts, i, "")
+            conf = safe_get(scores, i, 1.0)
 
             blocks.append({
                 "text": text,
-                "conf": float(conf),
+                "conf": float(conf) if conf else 1.0,
                 "bbox": norm_bbox,
                 "center": norm_center,
                 "polygon": [{"X": p[0] / w, "Y": p[1] / h} for p in pts],

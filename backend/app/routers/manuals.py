@@ -485,10 +485,8 @@ async def get_manual_page(
             img.convert("RGB").save(buf, format="PNG")
             storage.save(cache_key, buf.getvalue(), "image/png")
         else:
-            import io
-            buf = io.BytesIO()
-            pix.save(buf, format="PNG")
-            storage.save(cache_key, buf.getvalue(), "image/png")
+            png_bytes = pix.tobytes("png")
+            storage.save(cache_key, png_bytes, "image/png")
 
         doc.close()
         data = storage.read(cache_key)

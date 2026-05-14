@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from app.models.models import (
     User, Vehicle, VehicleShare, MaintenanceRecord, MaintenanceItem,
-    Manual, ItemTemplate, AIPrediction, ChatFeedback, SearchUsage
+    Manual, ItemTemplate, AIPrediction, ChatFeedback, SearchUsage, Setting
 )
 
 
@@ -50,6 +50,7 @@ async def migrate():
         (MaintenanceRecord, "maintenance_records"),
         (MaintenanceItem, "maintenance_items"),
         (Manual, "manuals"),
+        (Setting, "settings"),
         (ItemTemplate, "item_templates"),
         (AIPrediction, "ai_predictions"),
         (ChatFeedback, "chat_feedback"),
@@ -57,13 +58,20 @@ async def migrate():
     ]
 
     async with src_session() as src, dst_session() as dst:
+        # 禁用 FK 约束检查，避免旧数据中的孤立引用导致迁移中断
+        await dst.execute(text("SET session_replication_role = 'replica'"))
         for model, name in tables:
             # 清空目标表（幂等迁移）
             await dst.execute(text(f"TRUNCATE {name} CASCADE"))
             await dst.commit()
 
-            result = await src.execute(select(model))
-            rows = result.scalars().all()
+            try:
+                result = await src.execute(select(model))
+                rows = result.scalars().all()
+            except Exception as e:
+                print(f"  {name}: 源表读取失败（{e}），跳过")
+                continue
+
             if not rows:
                 print(f"  {name}: 0 条（跳过）")
                 continue
@@ -78,12 +86,20 @@ async def migrate():
             await dst.commit()
             print(f"  {name}: {len(rows)} 条 ✓")
 
+    # 重新启用 FK 约束
+    async with dst_session() as dst:
+        await dst.execute(text("SET session_replication_role = 'origin'"))
+        await dst.commit()
+
     # 重置 PG 序列，避免后续插入主键冲突
     async with dst_session() as dst:
         for _, name in tables:
-            await dst.execute(text(
-                f"SELECT setval(pg_get_serial_sequence('{name}', 'id'), coalesce(max(id), 1)) FROM {name}"
-            ))
+            try:
+                await dst.execute(text(
+                    f"SELECT setval(pg_get_serial_sequence('{name}', 'id'), coalesce(max(id), 1)) FROM {name}"
+                ))
+            except Exception:
+                pass  # 表可能没有 serial id 列（如 settings 主键是 key）
         await dst.commit()
     print("序列已校准")
 

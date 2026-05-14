@@ -692,11 +692,14 @@ class LLMOCR(BaseOCR):
         b64_image = base64.b64encode(processed_bytes).decode("utf-8")
         data_url = f"data:image/jpeg;base64,{b64_image}"
 
-        # 2. PaddleDetector（检测用 processed_bytes，归一化用 orig 尺寸 → 与 LLM bbox 空间一致）
-        from app.services.ocr.paddle_detector import get_detector
-        detector = get_detector()
-        # 用 processed_bytes 的实际尺寸归一化，确保与 LLM bbox 坐标空间一致
-        detect_blocks = detector.detect(processed_bytes, known_size=(proc_w, proc_h))
+        # 2. PaddleDetector（可选：未安装则跳过坐标精化，OCR 照样用）
+        detect_blocks = []
+        try:
+            from app.services.ocr.paddle_detector import get_detector
+            detector = get_detector()
+            detect_blocks = detector.detect(processed_bytes, known_size=(proc_w, proc_h))
+        except Exception as e:
+            logger.info("PaddleDetector 不可用（%s），跳过坐标精化", e)
 
         # 3. LLM 识别
         messages = [
@@ -802,10 +805,14 @@ class LLMOCR(BaseOCR):
         b64_image = base64.b64encode(processed_bytes).decode("utf-8")
         data_url = f"data:image/jpeg;base64,{b64_image}"
 
-        # PaddleDetector
-        from app.services.ocr.paddle_detector import get_detector
-        detector = get_detector()
-        detect_blocks = detector.detect(processed_bytes, known_size=(proc_w, proc_h))
+        # PaddleDetector（可选）
+        detect_blocks = []
+        try:
+            from app.services.ocr.paddle_detector import get_detector
+            detector = get_detector()
+            detect_blocks = detector.detect(processed_bytes, known_size=(proc_w, proc_h))
+        except Exception as e:
+            logger.info("PaddleDetector 不可用（%s），跳过坐标精化", e)
 
         # 复用 SYSTEM_PROMPT，确保模型有完整的抽取规则上下文
         messages = [
