@@ -9,14 +9,17 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# PaddlePaddle 需要 libgomp1
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+# PaddlePaddle 需要 libgomp1（先切到阿里云 Debian 镜像，避免 Docker Desktop DNS 劫持问题）
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # 先装 Paddle（它需要特定版本依赖），再装其他包
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir $(grep 'paddle' requirements.txt)
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --default-timeout=600 $(grep 'paddle' requirements.txt)
 RUN grep -v 'paddle' requirements.txt > /tmp/requirements-small.txt \
-    && pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r /tmp/requirements-small.txt
+    && pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --default-timeout=600 -r /tmp/requirements-small.txt
 
 COPY backend/ .
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist

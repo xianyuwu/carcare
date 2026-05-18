@@ -13,7 +13,7 @@ chromadb>=0.4.22
 PyMuPDF>=1.24.0
 Pillow>=10.0.0
 opencv-python-headless>=4.8.0
-paddlepaddle==3.3.1
+paddlepaddle==3.2.2
 paddleocr==3.5.0
 alibabacloud-ocr-api20210707>=3.0.0
 tencentcloud-sdk-python>=3.0.0

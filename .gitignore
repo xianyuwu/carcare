@@ -12,10 +12,7 @@ venv/
 *.sqlite3
 
 # 数据目录（运行时生成）
-backend/data/chroma/
-backend/data/uploads/
-backend/data/manual_pages/
-backend/data/vehicle_photos/
+backend/data/
 
 # 前端
 node_modules/

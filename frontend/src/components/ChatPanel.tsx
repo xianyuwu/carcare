@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
+import { createPortal } from 'react-dom'
 import { X, Send, Sparkles, User, ZoomIn, ZoomOut, Wrench, TrendingUp, Droplets, FileText, ChevronRight, Paintbrush, ThumbsUp, ThumbsDown, Copy, Check, AlertCircle, RefreshCw, Square, BookOpen, ExternalLink, ChevronDown, ChevronUp, Globe, Search, Link, Minimize2, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -717,6 +718,7 @@ export default function ChatPanel() {
   const showWarning = chatMessages.length > MESSAGE_WARNING_THRESHOLD
 
   return (
+    <>
     <div
       className={`${chatMaximized ? 'w-1/3' : 'w-96'} shrink-0 flex flex-col bg-white border-l border-slate-200 animate-slide-in transition-all duration-200`}
     >
@@ -880,14 +882,15 @@ export default function ChatPanel() {
           </div>
         </div>
 
-      {/* 引用来源 Modal */}
-      {modalSource && (
-        <SourceModal
-          key={modalSource.id}
-          source={modalSource}
-          onClose={() => setModalSource(null)}
-        />
-      )}
     </div>
+    {modalSource && createPortal(
+      <SourceModal
+        key={modalSource.id}
+        source={modalSource}
+        onClose={() => setModalSource(null)}
+      />,
+      document.body
+    )}
+  </>
   )
 }
